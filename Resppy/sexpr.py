@@ -23,7 +23,7 @@ class SExprNodeBase:
 
 
 class SExprLiteral(SExprNodeBase):
-    def __init__(self, value: Union[bool, int, float, complex, str, bytes]):
+    def __init__(self, value: Union[bool, int, float, complex, str, bytes, None, ...]):
         self.value = value
 
     def __str__(self):

@@ -27,7 +27,6 @@ mangle_replace = [
     ('\\', '_LS_'),
     ('|', '_MD_'),
     (':', '_CN_'),
-    (';', '_SM_'),
     ('?', '_QU_'),
     ('/', '_SL_'),
     (',', '_CO_'),
@@ -154,7 +153,7 @@ def sexpr_mangle(name: str) -> str:
     if iskeyword(name):
         ret = mangle_prefix + ret
 
-    if not name.replace('.', '_DO_').isidentifier():
+    if not ret.replace('.', '_DO_').isidentifier():
         raise ValueError("Invalid indentifier: %s -> %s" %
                          (name, ret))
     return ret

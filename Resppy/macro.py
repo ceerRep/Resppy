@@ -23,6 +23,20 @@ def pylist_macro(*content: SExprNodeBase, context: SExprContextManager) -> ASTBl
     return ASTHelper.build_block_from_list(exprs)
 
 
+def tuple_macro(*content: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
+    exprs = list(map(lambda x: x.compile(context), content))
+    return ASTHelper.build_block_from_tuple(exprs)
+
+
+def sharp_macro(content: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
+    if isinstance(content, SExpr):
+        # Tuple
+        exprs = list(map(lambda x: x.compile(context), content))
+        return ASTHelper.build_block_from_tuple(exprs)
+    else:
+        raise ValueError("Unknown arg")
+
+
 def begin_macro(first: SExprNodeBase, *content: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
     stmts = [first.compile(context)]
     stmts.extend(map(lambda x: x.compile(context), content))
@@ -67,7 +81,7 @@ def func_decl_macro(name: SExprNodeBase,
     return ret
 
 
-def lanbda_decl_macro(args: SExprNodeBase,
+def lambda_decl_macro(args: SExprNodeBase,
                       *body: SExprNodeBase,
                       context: SExprContextManager) -> ASTBlock:
     name = context.get_temp()
@@ -120,7 +134,7 @@ def for_macro(bindings: SExprNodeBase,
             raise ValueError("bindings must be an sexpr")
         name, value = binding
 
-        assert (isinstance(name, SExprSymbol))
+        name: SExprNodeBase
         value: SExprNodeBase
 
         names.append(name.compile(context))
@@ -134,9 +148,30 @@ def for_macro(bindings: SExprNodeBase,
             ASTHelper.build_block_from_symbol("zip"),
             values),
         body,
-        ASTHelper.build_block_from_literal(...),
+        ASTHelper.build_block_from_pass(),
         context
     )
+
+
+def for_list_macro(bindings: SExprNodeBase,
+                   first: SExprNodeBase,
+                   *content: SExprNodeBase,
+                   context: SExprContextManager) -> ASTBlock:
+    result_name = context.get_temp()
+    body = SExpr(SExprSymbol("%s.append" % result_name),
+                 SExpr(SExprSymbol("begin"), first, *content))
+    ret = for_macro(bindings, body, context=context)
+    ret.drop_result(context)
+    ret = ASTHelper.pack_block_stmts([
+        ASTHelper.build_block_from_assign(ASTHelper.build_block_from_symbol(result_name),
+                                          ASTHelper.build_block_from_list([]),
+                                          context),
+        ret
+    ])
+    ret.add_temp(result_name)
+    ret.result = ASTHelper.build_block_from_symbol(result_name).get_result()
+
+    return ret
 
 
 def if_macro(test: SExprNodeBase,
@@ -168,24 +203,34 @@ def while_macro(test: SExprNodeBase,
 
     ret = ASTHelper.build_block_from_while(test,
                                            body,
-                                           ASTHelper.build_block_from_literal(...),
+                                           ASTHelper.build_block_from_pass(),
                                            context)
     return ret
+
+
+def break_macro(context: SExprContextManager) -> ASTBlock:
+    return ASTHelper.build_block_from_break()
 
 
 def when_macro(test: SExprNodeBase,
                first: SExprNodeBase,
                *content: SExprNodeBase,
                context: SExprContextManager) -> ASTBlock:
-    test = test.compile(context)
-    body = begin_macro(first, *content, context=context)
-    body.drop_result(context)
+    # test = test.compile(context)
+    # body = begin_macro(first, *content, context=context)
 
-    ret = ASTHelper.build_block_from_if(test,
-                                        body,
-                                        ASTHelper.build_block_from_literal(...),
-                                        context)
-    return ret
+    return if_macro(
+        test,
+        SExpr(SExprSymbol('begin'), first, *content),
+        SExprLiteral(None),
+        context
+    )
+
+    # ret = ASTHelper.build_block_from_if(test,
+    #                                     body,
+    #                                     ASTHelper.build_block_from_pass(),
+    #                                     context)
+    # return ret
 
 
 def unless_macro(test: SExprNodeBase,
@@ -197,7 +242,7 @@ def unless_macro(test: SExprNodeBase,
     body.drop_result(context)
 
     ret = ASTHelper.build_block_from_if(test,
-                                        ASTHelper.build_block_from_literal(...),
+                                        ASTHelper.build_block_from_pass(),
                                         body,
                                         context)
     return ret
@@ -211,8 +256,116 @@ def setv_macro(target: SExprNodeBase,
                                              context)
 
 
-def void_macro(context: SExprContextManager) -> ASTBlock:
+def dot_macro(source: SExprNodeBase,
+              *attrs: SExprNodeBase,
+              context: SExprContextManager) -> ASTBlock:
+    target = source.compile(context)
+
+    for attr in attrs:
+        assert isinstance(attr, SExprSymbol)
+        target = ASTHelper.build_block_from_getattr(target, attr.get_mangled_name())
+
+    return target
+
+
+def void_macro(*args, context: SExprContextManager) -> ASTBlock:
     return ASTHelper.build_block_from_literal(None)
+
+
+def unpack_iterable_macro(arg: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
+    return ASTValues(arg.compile(context))
+
+
+def contains_macro(left: SExprNodeBase, right: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
+    left = left.compile(context)
+    right = right.compile(context)
+
+    return ASTHelper.build_block_from_op('in', right, left)
+
+
+def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
+    env = {
+        '__name__': 'code',
+        '__doc__': None,
+        '__package__': None,
+        '__loader__': None,
+        '__spec__': None
+    }
+    exec("from %s.sexpr import *" % __package__, env)  # fresh globals
+
+    def register_global_variable(name: str, func, env: Dict[str, Any]):
+        env[sexpr_mangle(name)] = func
+
+    def register_op(op: str, context: SExprContextManager, alias: Optional[str] = None):
+        def op_macro(left: SExprNodeBase, right: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
+            left = left.compile(context)
+            right = right.compile(context)
+
+            return ASTHelper.build_block_from_op(op, left, right)
+
+        context.register(alias if alias else op, SystemMacro(op_macro))
+
+    context = SExprContextManager()
+
+    context.register('#', SystemMacro(sharp_macro))
+    context.register('#*', SystemMacro(unpack_iterable_macro))
+
+    context.register('quote', SystemMacro(quote_macro))
+    context.register('pylist', SystemMacro(pylist_macro))
+    context.register('tuple', SystemMacro(tuple_macro))
+    context.register('begin', SystemMacro(begin_macro))
+    context.register('defn', SystemMacro(func_decl_macro))
+    context.register('fn', SystemMacro(lambda_decl_macro))
+    context.register('import', SystemMacro(import_macro))
+    context.register('for', SystemMacro(for_macro))
+    context.register('for/list', SystemMacro(for_list_macro))
+    context.register('while', SystemMacro(while_macro))
+    context.register('break', SystemMacro(break_macro))
+    context.register('if', SystemMacro(if_macro))
+    context.register('when', SystemMacro(when_macro))
+    context.register('unless', SystemMacro(unless_macro))
+    context.register('setv', SystemMacro(setv_macro))
+    context.register('void', SystemMacro(void_macro))
+    context.register('unpack-iterable', SystemMacro(unpack_iterable_macro))
+    context.register('.', SystemMacro(dot_macro))
+    register_op('+', context)
+    register_op('-', context)
+    register_op('*', context)
+    register_op('@', context)
+    register_op('/', context)
+    register_op('//', context)
+    register_op('%', context)
+    register_op('**', context)
+    register_op('<', context)
+    register_op('<=', context)
+    register_op('==', context)
+    register_op('==', context, 'eq?')
+    register_op('!=', context)
+    register_op('>', context)
+    register_op('>=', context)
+    context.register('contains?', SystemMacro(contains_macro))
+
+    register_global_variable("void", lambda *args, **kwargs: None, env)
+    register_global_variable("pylist", lambda *args: [*args], env)
+    register_global_variable("tuple", lambda *args: (*args,), env)
+    register_global_variable("+", lambda a, b: a + b, env)
+    register_global_variable("-", lambda a, b: a - b, env)
+    register_global_variable("*", lambda a, b: a * b, env)
+    register_global_variable("/", lambda a, b: a / b, env)
+    register_global_variable("//", lambda a, b: a // b, env)
+    register_global_variable("%", lambda a, b: a % b, env)
+    register_global_variable("<", lambda a, b: a < b, env)
+    register_global_variable("<=", lambda a, b: a <= b, env)
+    register_global_variable(">", lambda a, b: a > b, env)
+    register_global_variable(">=", lambda a, b: a >= b, env)
+    register_global_variable("eq?", lambda a, b: a == b, env)
+    register_global_variable("**", lambda a, b: a ** b, env)
+    register_global_variable("@", lambda a, b: a @ b, env)
+    register_global_variable("get", lambda a, b: a[b], env)
+    register_global_variable("set", lambda a, b, c: a.__setitem__(b, c), env)
+    register_global_variable("contains?", lambda a, b: b in a, env)
+
+    return context, env
 
 
 if __name__ == "__main__":
@@ -221,39 +374,23 @@ if __name__ == "__main__":
         import uncompyle6
         from .compiler import compile_stream
 
-        context = SExprContextManager()
-        context.register('quote', SystemMacro(quote_macro))
-        context.register('pylist', SystemMacro(pylist_macro))
-        context.register('begin', SystemMacro(begin_macro))
-        context.register('defn', SystemMacro(func_decl_macro))
-        context.register('fn', SystemMacro(lanbda_decl_macro))
-        context.register('import', SystemMacro(import_macro))
-        context.register('for', SystemMacro(for_macro))
-        context.register('while', SystemMacro(while_macro))
-        context.register('if', SystemMacro(if_macro))
-        context.register('when', SystemMacro(when_macro))
-        context.register('unless', SystemMacro(unless_macro))
-        context.register('setv', SystemMacro(setv_macro))
-        context.register('void', SystemMacro(void_macro))
+        context, genv = generate_default_context()
+
+        # TODO: with stmt; operators to macro
 
         f = compile_stream(
+            # open('test.in', encoding='utf-8'),
             StringIO(
-                """ (begin 
-                      (setv i 0)
-                      (print i)
-                      (setv [i j] [2 3])
-                      (print i)
-                      (void))
-                    """),
+                """(print #* #(1 2 3))"""),
             context,
-            globals())
+            genv)
 
         # import dis
         # dis.dis(f)
 
         uncompyle6.deparse_code2str(f.__code__)
         print()
-        f()
+        # f()
 
 
     main()

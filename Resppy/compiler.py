@@ -12,7 +12,7 @@ from .sexpr import *
 
 __all__ = ['compile_stream']
 
-avail_special_chars = "~!@#$%^&*-_=+\\|;:/?.>,<"
+avail_special_chars = "~!@#$%^&*-_=+\\|:/?.>,<"
 
 
 class SpecialToken:
@@ -51,9 +51,14 @@ class Tokenizer:
             raise EOFError()
 
     def peek(self) -> str:
-        if self.pos == len(self.buffer):
-            self.read_from_stream()
-        return self.buffer[self.pos]
+        ret = ' '
+        try:
+            if self.pos == len(self.buffer):
+                self.read_from_stream()
+            ret = self.buffer[self.pos]
+        except EOFError:
+            pass
+        return ret
 
     def read(self) -> str:
         if self.pos == len(self.buffer):
@@ -67,24 +72,33 @@ class Tokenizer:
             self.column = 1
         return ret
 
+    def eat_line(self):
+        now_line = self.lino
+        while self.lino == now_line:
+            self.read()
+
     def parse_next_token(self):
         # TODO Make it more pretty
         now = ' '
         while now.isspace():
             now = self.read()
 
+            if now == ';':
+                self.eat_line()
+                now = self.read()
+
         if now in "(){}[]'`":
             return now, Tokenizer.TokenType.Symbol
 
         chars = [now]
-        if now.isdigit():
-            now = self.peek()
-            while now.isalnum() or now in avail_special_chars:
-                chars.append(now)
-                self.read()
-                now = self.peek()
-
-            return ast.literal_eval(''.join(chars)), Tokenizer.TokenType.ConstLiteral
+        # if now.isdigit():
+        #     now = self.peek()
+        #     while now.isalnum() or now in avail_special_chars:
+        #         chars.append(now)
+        #         self.read()
+        #         now = self.peek()
+        #
+        #     return ast.literal_eval(''.join(chars)), Tokenizer.TokenType.ConstLiteral
 
         if now == '"':
             prev = now
@@ -99,12 +113,18 @@ class Tokenizer:
 
             return ast.literal_eval(''.join(chars)), Tokenizer.TokenType.ConstLiteral
 
-        # identifier
+        # identifier or num
         now = self.peek()
         while now.isalnum() or now in avail_special_chars:
             chars.append(now)
             self.read()
             now = self.peek()
+
+        target = ''.join(chars)
+        try:
+            return ast.literal_eval(target), Tokenizer.TokenType.ConstLiteral
+        except Exception:
+            pass
 
         return ''.join(chars), Tokenizer.TokenType.Identifier
 
@@ -157,34 +177,42 @@ def parse_quasiquote(tokenizer: Tokenizer):
 
 def parse_next(tokenizer: Tokenizer) -> Union[SpecialToken, SExprNodeBase]:
     token_val, token_type = tokenizer.parse_next_token()
-    if token_type == Tokenizer.TokenType.Symbol:
-        if token_val == '(':
-            return parse_sexpr(tokenizer)
-        elif token_val == '[':
-            return parse_list(tokenizer)
-        elif token_val == '{':
-            ...  # dict
-        elif token_val == "'":
-            return parse_quote(tokenizer)
-        elif token_val == "`":
-            return parse_quasiquote(tokenizer)
-        elif token_val == ')':
-            return SpecialToken(')')
-        elif token_val == ']':
-            return SpecialToken(']')
-        elif token_val == '}':
-            return SpecialToken('}')
+
+    try:
+        if token_type == Tokenizer.TokenType.Symbol:
+            if token_val == '(':
+                return parse_sexpr(tokenizer)
+            elif token_val == '[':
+                return parse_list(tokenizer)
+            elif token_val == '{':
+                ...  # dict
+            elif token_val == "'":
+                return parse_quote(tokenizer)
+            elif token_val == "`":
+                return parse_quasiquote(tokenizer)
+            elif token_val == ')':
+                return SpecialToken(')')
+            elif token_val == ']':
+                return SpecialToken(']')
+            elif token_val == '}':
+                return SpecialToken('}')
+            else:
+                raise ValueError("Unknown symbol")
+        elif token_type == Tokenizer.TokenType.ConstLiteral:
+            return SExprLiteral(token_val)
+        elif token_type == Tokenizer.TokenType.Identifier:
+            if token_val[0] == ':':
+                return SExprKeyword(token_val[1:])
+            elif token_val[0] == '#':
+                arg = parse_next(tokenizer)
+                assert isinstance(arg, SExprNodeBase)
+                return SExpr(SExprSymbol(token_val), arg)
+            else:
+                return SExprSymbol(token_val)
         else:
-            raise ValueError("Unknown symbol")
-    elif token_type == Tokenizer.TokenType.ConstLiteral:
-        return SExprLiteral(token_val)
-    elif token_type == Tokenizer.TokenType.Identifier:
-        if token_val[0] == ':':
-            return SExprKeyword(token_val[1:])
-        else:
-            return SExprSymbol(token_val)
-    else:
-        raise ValueError('Unknown token type')
+            raise ValueError('Unknown token type')
+    except EOFError:
+        raise ValueError("Unexpected end of file")
 
 
 def parse_stream(stream: TextIO):
@@ -203,7 +231,7 @@ def compile_stream(stream: TextIO, context: SExprContextManager, global_dict: Op
     blocks: List[ASTBlock] = []
 
     for sexpr in sexprs:
-        sexpr = SExpr(SExprSymbol("print"), sexpr)
+        # sexpr = SExpr(SExprSymbol("print"), sexpr)
         block = sexpr.compile(context)
 
         block.drop_result(context)
@@ -217,14 +245,19 @@ def compile_stream(stream: TextIO, context: SExprContextManager, global_dict: Op
 
 if __name__ == '__main__':
     def main():
+        import uncompyle6
+        from sys import stdin, argv
         from io import StringIO
-        from sys import stdin
+        from .macro import generate_default_context
 
-        context = SExprContextManager()
+        if len(argv) == 2:
+            target = open(argv[1], encoding='utf-8')
+        else:
+            target = stdin
+        context, env = generate_default_context()
+        f = compile_stream(StringIO(target.read()), context, env)
 
-        compile_stream(StringIO("(print (min 1 2 3) (max 1 2 3))"), context)()
-
-        compile_stream(stdin, context)()
+        uncompyle6.deparse_code2str(f.__code__)
 
 
     main()

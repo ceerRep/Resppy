@@ -79,7 +79,7 @@ class ASTValues(ASTBlock):
         return self.values.stmts
 
     def get_result(self) -> ast.expr:
-        return ast.Starred(self.values.get_result())
+        return ast.Starred(self.values.get_result(), ast.Load())
 
     def drop_result(self, context: SExprContextManager):
         self.values.drop_result(context)
@@ -89,6 +89,34 @@ class ASTValues(ASTBlock):
 
 
 class ASTHelper:
+    ops = {
+        '+': ast.Add,
+        '-': ast.Sub,
+        '*': ast.Mult,
+        '/': ast.Div,
+        '//': ast.FloorDiv,
+        '%': ast.Mod,
+        '@': ast.MatMult,
+        '**': ast.Pow,
+        '<<': ast.LShift,
+        '>>': ast.RShift,
+        '|': ast.BitOr,
+        '^': ast.BitXor,
+        '&': ast.BitAnd
+    }
+
+    cmpops = {
+        '<': ast.Lt,
+        '<=': ast.LtE,
+        '==': ast.Eq,
+        '!=': ast.NotEq,
+        '>': ast.Gt,
+        '>=': ast.GtE,
+        'is': ast.Is,
+        'isnot': ast.IsNot,
+        'in': ast.In,
+        'notin': ast.NotIn
+    }
 
     @staticmethod
     def build_block_from_symbol(symbol: str) -> ASTStmtBlock:
@@ -103,8 +131,20 @@ class ASTHelper:
         return ASTStmtBlock([], target)
 
     @staticmethod
+    def build_block_from_getattr(target: ASTBlock, attr: str) -> ASTBlock:
+        assert isinstance(target, ASTStmtBlock), "target must be ASTStmtBlock"
+
+        target.result = ast.Attribute(target.get_result(), attr, ast.Load())
+
+        return target
+
+    @staticmethod
     def build_block_from_literal(literal: Union[bool, int, float, complex, str, bytes, ..., None]) -> ASTStmtBlock:
         return ASTStmtBlock([], ast.Constant(literal))
+
+    @staticmethod
+    def build_block_from_pass() -> ASTStmtBlock:
+        return ASTStmtBlock([ast.Pass()], None)
 
     @staticmethod
     def build_block_from_list(contents: List[ASTBlock]) -> ASTStmtBlock:
@@ -270,6 +310,18 @@ class ASTHelper:
                             body=list(body.stmts),
                             decorator_list=[])],
             ast.Name(name, ast.Load()))
+
+    @staticmethod
+    def build_block_from_op(op: str, left: ASTBlock, right: ASTBlock):
+
+        ret = ASTHelper.pack_block_stmts([left, right])
+
+        if op in ASTHelper.ops:  # binary
+            ret.result = ast.BinOp(left.get_result(), ASTHelper.ops[op](), right.get_result())
+        elif op in ASTHelper.cmpops:
+            ret.result = ast.Compare(left.get_result(), [ASTHelper.cmpops[op]()], [right.get_result()])
+
+        return ret
 
     @staticmethod
     def build_block_from_return(value: ASTBlock, context: SExprContextManager) -> ASTStmtBlock:

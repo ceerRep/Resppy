@@ -85,7 +85,7 @@ class Tokenizer:
 
             if now == ';':
                 self.eat_line()
-                now = self.read()
+                now = ' '
 
         if now in "(){}[]'`":
             return now, Tokenizer.TokenType.Symbol

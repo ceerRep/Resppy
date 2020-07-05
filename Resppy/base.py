@@ -26,7 +26,7 @@ mangle_replace = [
     ('=', '_EQ_'),
     ('\\', '_LS_'),
     ('|', '_MD_'),
-    (':', '_CN_'),
+    # (':', '_CN_'),
     ('?', '_QU_'),
     ('/', '_SL_'),
     (',', '_CO_'),
@@ -37,6 +37,32 @@ mangle_replace = [
 
 
 class ASTBlock:
+    class CtxTransformer:
+        def visit(self, node):
+            method_name = "visit_" + node.__class__.__name__
+
+            if hasattr(self, method_name):
+                getattr(self, method_name)(node)
+
+            for child in ast.iter_child_nodes(node):
+                self.visit(child)
+
+            return node
+
+        def visit_Starred(self, node: ast.Starred) -> None:
+            if hasattr(node.value, "ctx"):
+                node.value.ctx = node.ctx
+
+        def visit_Tuple(self, node: ast.Tuple) -> None:
+            for elt in node.elts:
+                if hasattr(elt, "ctx"):
+                    elt.ctx = node.ctx
+
+        def visit_List(self, node: ast.List) -> None:
+            for elt in node.elts:
+                if hasattr(elt, "ctx"):
+                    elt.ctx = node.ctx
+
     def __init__(self):
         self.__temp_names = []
 
@@ -72,9 +98,10 @@ class ASTBlock:
     def get_store_result(self) -> ast.expr:
         ret = deepcopy(self.get_result())
 
-        for node in ast.walk(ret):
-            if hasattr(node, 'ctx'):
-                node.ctx = ast.Store()
+        if hasattr(ret, "ctx"):
+            ret.ctx = ast.Store()
+
+        ret = ASTBlock.CtxTransformer().visit(ret)
 
         return ret
 
@@ -85,14 +112,14 @@ class SExprContextManager:
 
         def __init__(self, parent):
             self.parent = parent
-            self.macros: typing.Dict[str, SExprMacro] = {}
+            self.macros: Dict[str, SExprMacro] = {}
             self.free_temps = []
             self.next_temp_id = 1
 
         def register(self, name: str, body: SExprMacro):
             self.macros[sexpr_mangle(name)] = body
 
-        def resolve(self, name) -> typing.Optional[SExprMacro]:
+        def resolve(self, name) -> Optional[SExprMacro]:
             if name in self.macros:
                 return self.macros[name]
             elif self.parent:
@@ -114,7 +141,7 @@ class SExprContextManager:
             self.free_temps.append(name)
 
     def __init__(self):
-        self.contexts: typing.List[SExprContextManager.SExprContext] = [
+        self.contexts: List[SExprContextManager.SExprContext] = [
             SExprContextManager.SExprContext(None)
         ]
 

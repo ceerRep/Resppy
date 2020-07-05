@@ -2,6 +2,7 @@
 
 from io import StringIO
 from cmd import Cmd
+import traceback
 
 from .sexpr import SExprNodeBase, SExprSymbol, SExpr
 from .macro import generate_default_context
@@ -91,7 +92,8 @@ class ResppyRepl(Cmd):
                 self.intro = None
                 self.init()
 
-                self.stdout.write("%s: %s\n" % (e.__class__.__name__, str(e)))
+                self.stdout.write(traceback.format_exc())
+                self.stdout.write("\n%s: %s\n" % (e.__class__.__name__, str(e)))
 
 
 if __name__ == '__main__':

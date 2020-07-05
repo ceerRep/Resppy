@@ -14,6 +14,14 @@ class SystemMacro(SExprMacro):
         return self.func(*args, context=context)
 
 
+class UserMacro(SExprMacro):
+    def __init__(self, func: Callable[..., SExprNodeBase]):
+        self.func = func
+
+    def expand(self, args: list, context) -> ASTBlock:
+        return self.func(*args).compile(context)
+
+
 def quote_macro(body: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
     return body.dump_to_ast(context)
 
@@ -33,6 +41,9 @@ def sharp_macro(content: SExprNodeBase, context: SExprContextManager) -> ASTBloc
         # Tuple
         exprs = list(map(lambda x: x.compile(context), content))
         return ASTHelper.build_block_from_tuple(exprs)
+    elif isinstance(content, SExprLiteral):
+        if isinstance(content.value, str):
+            return ASTHelper.build_block_from_literal(eval("b" + repr(content.value)))
     else:
         raise ValueError("Unknown arg")
 
@@ -174,6 +185,15 @@ def for_list_macro(bindings: SExprNodeBase,
     return ret
 
 
+def for_tuple_macro(bindings: SExprNodeBase,
+                    first: SExprNodeBase,
+                    *content: SExprNodeBase,
+                    context: SExprContextManager) -> ASTBlock:
+    return SExpr(SExprSymbol('tuple'),
+                 SExpr(SExprSymbol("#*"),
+                       SExpr(SExprSymbol("for/list"), bindings, first, *content))).compile(context)
+
+
 def if_macro(test: SExprNodeBase,
              body: SExprNodeBase,
              elbody: SExprNodeBase,
@@ -248,12 +268,37 @@ def unless_macro(test: SExprNodeBase,
     return ret
 
 
-def setv_macro(target: SExprNodeBase,
-               value: SExprNodeBase,
-               context: SExprContextManager) -> ASTBlock:
+def set_macro(target: SExprNodeBase,
+              value: SExprNodeBase,
+              context: SExprContextManager) -> ASTBlock:
     return ASTHelper.build_block_from_assign(target.compile(context),
                                              value.compile(context),
                                              context)
+
+
+def subscr_macro(target: SExprNodeBase,
+                 *indexes: SExprNodeBase,
+                 context: SExprContextManager) -> ASTBlock:
+    ret = target.compile(context)
+
+    for index in indexes:
+        ret = ASTHelper.build_block_from_subscr(ret, index.compile(context))
+
+    return ret
+
+
+def set_subscr_macro(target: SExprNodeBase,
+                     *indexes: SExprNodeBase,
+                     context: SExprContextManager) -> ASTBlock:
+    ret = target.compile(context)
+
+    value = indexes[-1]
+    indexes = indexes[:-1]
+
+    for index in indexes:
+        ret = ASTHelper.build_block_from_subscr(ret, index.compile(context))
+
+    return ASTHelper.build_block_from_assign(ret, value.compile(context), context)
 
 
 def dot_macro(source: SExprNodeBase,
@@ -281,6 +326,41 @@ def contains_macro(left: SExprNodeBase, right: SExprNodeBase, context: SExprCont
     right = right.compile(context)
 
     return ASTHelper.build_block_from_op('in', right, left)
+
+
+def quasiquote_macro(target: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
+    if not isinstance(target, SExpr):
+        return target.dump_to_ast(context)
+    else:
+        if len(target) == 0 or (str(target[0]) != "#~" and str(target[0]) != "#~*"):
+            params = []
+
+            for content in target:
+                params.append(quasiquote_macro(content, context))
+
+            return ASTHelper.build_block_from_func_call(
+                ASTHelper.build_block_from_symbol(SExpr.__name__),
+                params)
+        elif str(target[0]) == "#~":
+            return target[1].compile(context)
+        else:
+            return unpack_iterable_macro(target[1], context=context)
+
+
+def defmacro_macro(name: SExprNodeBase,
+                   args: SExprNodeBase,
+                   *body: SExprNodeBase,
+                   context: SExprContextManager) -> ASTBlock:
+    assert isinstance(name, SExprSymbol)
+    _, env = generate_default_context()
+    function = func_decl_macro(name, args, *body, context=context)
+
+    ASTHelper.compile(function, context, env)()
+
+    function = env[name.get_mangled_name()]
+    context.register(str(name), UserMacro(function))
+
+    return ASTHelper.build_block_from_literal(None)
 
 
 def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
@@ -311,22 +391,27 @@ def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
     context.register('#*', SystemMacro(unpack_iterable_macro))
 
     context.register('quote', SystemMacro(quote_macro))
-    context.register('pylist', SystemMacro(pylist_macro))
-    context.register('tuple', SystemMacro(tuple_macro))
+    context.register('list*', SystemMacro(pylist_macro))
+    context.register('tuple*', SystemMacro(tuple_macro))
     context.register('begin', SystemMacro(begin_macro))
     context.register('defn', SystemMacro(func_decl_macro))
+    context.register('defmacro', SystemMacro(defmacro_macro))
     context.register('fn', SystemMacro(lambda_decl_macro))
     context.register('import', SystemMacro(import_macro))
     context.register('for', SystemMacro(for_macro))
     context.register('for/list', SystemMacro(for_list_macro))
+    context.register('for/tuple', SystemMacro(for_tuple_macro))
     context.register('while', SystemMacro(while_macro))
     context.register('break', SystemMacro(break_macro))
     context.register('if', SystemMacro(if_macro))
     context.register('when', SystemMacro(when_macro))
     context.register('unless', SystemMacro(unless_macro))
-    context.register('setv', SystemMacro(setv_macro))
+    context.register('set!', SystemMacro(set_macro))
+    context.register('getscr', SystemMacro(subscr_macro))
+    context.register('setscr!', SystemMacro(set_subscr_macro))
     context.register('void', SystemMacro(void_macro))
     context.register('unpack-iterable', SystemMacro(unpack_iterable_macro))
+    context.register('quasiquote', SystemMacro(quasiquote_macro))
     context.register('.', SystemMacro(dot_macro))
     register_op('+', context)
     register_op('-', context)
@@ -346,8 +431,8 @@ def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
     context.register('contains?', SystemMacro(contains_macro))
 
     register_global_variable("void", lambda *args, **kwargs: None, env)
-    register_global_variable("pylist", lambda *args: [*args], env)
-    register_global_variable("tuple", lambda *args: (*args,), env)
+    register_global_variable("list*", lambda *args: [*args], env)
+    register_global_variable("tuple*", lambda *args: (*args,), env)
     register_global_variable("+", lambda a, b: a + b, env)
     register_global_variable("-", lambda a, b: a - b, env)
     register_global_variable("*", lambda a, b: a * b, env)
@@ -361,9 +446,25 @@ def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
     register_global_variable("eq?", lambda a, b: a == b, env)
     register_global_variable("**", lambda a, b: a ** b, env)
     register_global_variable("@", lambda a, b: a @ b, env)
-    register_global_variable("get", lambda a, b: a[b], env)
-    register_global_variable("set", lambda a, b, c: a.__setitem__(b, c), env)
     register_global_variable("contains?", lambda a, b: b in a, env)
+
+    def get_subscr_func(target, *indexes):
+        for index in indexes:
+            target = target[index]
+        return target
+
+    def set_subscr_func(target, *values):
+        value = values[-1]
+        last_ind = values[-2]
+        values = values[:-2]
+
+        for index in values:
+            target = target[index]
+
+        target[last_ind] = values
+
+    register_global_variable("getscr", get_subscr_func, env)
+    register_global_variable("setscr!", set_subscr_func, env)
 
     return context, env
 

@@ -91,14 +91,6 @@ class Tokenizer:
             return now, Tokenizer.TokenType.Symbol
 
         chars = [now]
-        # if now.isdigit():
-        #     now = self.peek()
-        #     while now.isalnum() or now in avail_special_chars:
-        #         chars.append(now)
-        #         self.read()
-        #         now = self.peek()
-        #
-        #     return ast.literal_eval(''.join(chars)), Tokenizer.TokenType.ConstLiteral
 
         if now == '"':
             prev = now
@@ -160,7 +152,7 @@ def parse_list(tokenizer: Tokenizer):
 
         ret.append(next_value)
 
-    return SExpr(SExprSymbol('pylist'), *ret)
+    return SExpr(SExprSymbol('list*'), *ret)
 
 
 def parse_quote(tokenizer: Tokenizer):

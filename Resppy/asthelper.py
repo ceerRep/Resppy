@@ -139,6 +139,13 @@ class ASTHelper:
         return target
 
     @staticmethod
+    def build_block_from_subscr(target: ASTBlock, index: ASTBlock) -> ASTBlock:
+        ret = ASTHelper.pack_block_stmts([target, index])
+        ret.result = ast.Subscript(target.get_result(), ast.Index(index.get_result()), ast.Load())
+
+        return ret
+
+    @staticmethod
     def build_block_from_literal(literal: Union[bool, int, float, complex, str, bytes, ..., None]) -> ASTStmtBlock:
         return ASTStmtBlock([], ast.Constant(literal))
 
@@ -328,7 +335,7 @@ class ASTHelper:
         ret_val = value.get_result()
 
         ret = ASTHelper.pack_block_stmts(
-            chain(value,
+            chain([value],
                   [ASTStmtBlock([
                       ast.Return(ret_val)
                   ], None)]))

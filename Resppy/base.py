@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ast
+import itertools
+
 from typing import *
 from copy import deepcopy
 from keyword import iskeyword
 
-__all__ = ["ASTBlock", "SExprMacro", "SExprContextManager", "sexpr_mangle"]
+__all__ = ["ASTBlock", "SExprMacro", "SExprContextManager", "sexpr_mangle", "chain0"]
 
 mangle_prefix = "_S_"
 mangle_replace = [
@@ -75,6 +77,10 @@ class ASTBlock:
             context.free_temp(name)
         self.__temp_names = []
 
+    @property
+    def temps(self):
+        return self.__temp_names
+
     def add_temp(self, name: str):
         self.__temp_names.append(name)
         return self
@@ -92,7 +98,7 @@ class ASTBlock:
     def drop_result(self, context: SExprContextManager):
         raise NotImplementedError("ASTBlock.drop_result")
 
-    def apply_result(self, context: SExprContextManager):
+    def apply_result(self, context: SExprContextManager, name: Optional[str]):
         raise NotImplementedError("ASTBlock.apply_result")
 
     def get_store_result(self) -> ast.expr:
@@ -104,6 +110,9 @@ class ASTBlock:
         ret = ASTBlock.CtxTransformer().visit(ret)
 
         return ret
+
+    def __len__(self):
+        return 1 if self.stmts else 0
 
 
 class SExprContextManager:
@@ -184,3 +193,12 @@ def sexpr_mangle(name: str) -> str:
         raise ValueError("Invalid indentifier: %s -> %s" %
                          (name, ret))
     return ret
+
+
+def chain0(*iters: Iterable) -> Iterable:
+    target = list(filter(lambda x: x, iters))
+
+    if target:
+        return itertools.chain(*target)
+    else:
+        return []

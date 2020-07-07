@@ -113,6 +113,10 @@ class Tokenizer:
             now = self.peek()
 
         target = ''.join(chars)
+
+        if target == "...":
+            return ..., Tokenizer.TokenType.ConstLiteral
+
         try:
             return ast.literal_eval(target), Tokenizer.TokenType.ConstLiteral
         except Exception:

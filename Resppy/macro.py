@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+
 from .base import *
 from .sexpr import *
 
@@ -19,7 +21,13 @@ class UserMacro(SExprMacro):
         self.func = func
 
     def expand(self, args: list, context) -> ASTBlock:
-        return self.func(*args).compile(context)
+        sexpr = self.func(*args)
+        try:
+            ret = sexpr.compile(context)
+            return ret
+        except Exception as e:
+            print("Macro expand error: ", sexpr)
+            raise e
 
 
 def quote_macro(body: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
@@ -38,9 +46,23 @@ def tuple_macro(*content: SExprNodeBase, context: SExprContextManager) -> ASTBlo
 
 def sharp_macro(content: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
     if isinstance(content, SExpr):
-        # Tuple
-        exprs = list(map(lambda x: x.compile(context), content))
-        return ASTHelper.build_block_from_tuple(exprs)
+        if not isinstance(content[0], SExprSymbol) or content[0] != SExprSymbol("list*"):
+            # Tuple
+            exprs = list(map(lambda x: x.compile(context), content))
+            return ASTHelper.build_block_from_tuple(exprs)
+        else:
+            # Slice
+            params = []
+
+            for param in content[1:]:
+                if isinstance(param, SExprSymbol) and param == SExprSymbol("$"):
+                    params.append(ASTHelper.build_block_from_literal(None))
+                else:
+                    params.append(param.compile(context))
+            while len(params) < 3:
+                params.append(ASTHelper.build_block_from_literal(None))
+            assert len(params) == 3
+            return ASTHelper.build_block_from_func_call(ASTHelper.build_block_from_symbol("slice"), params)
     elif isinstance(content, SExprLiteral):
         if isinstance(content.value, str):
             return ASTHelper.build_block_from_literal(eval("b" + repr(content.value)))
@@ -72,15 +94,24 @@ def func_decl_macro(name: SExprNodeBase,
         raise ValueError("Function name must be a symbol")
 
     # TODO: kwargs
-    param_list: List[str] = []
+    param_list: List[Tuple[str, Union[None, Ellipsis, ASTBlock]]] = []
 
     if not isinstance(args, SExpr):
         raise ValueError("Param list must be a list")
 
     for arg in args:
-        if not isinstance(arg, SExprSymbol):
+        if isinstance(arg, SExpr):
+            assert len(arg) == 2
+            assert isinstance(arg[0], SExprSymbol)
+
+            if isinstance(arg[1], SExprLiteral) and arg[1].value is ...:
+                param_list.append((arg[0].get_mangled_name(), ...))
+            else:
+                param_list.append((arg[0].get_mangled_name(), arg[1].compile(context)))
+        elif isinstance(arg, SExprSymbol):
+            param_list.append((arg.get_mangled_name(), None))
+        else:
             raise ValueError("Function param must be a symbol")
-        param_list.append(arg.get_mangled_name())
 
     stmts: List[ASTBlock] = [stmt.compile(context) for stmt in body]
 
@@ -97,37 +128,68 @@ def lambda_decl_macro(args: SExprNodeBase,
                       context: SExprContextManager) -> ASTBlock:
     name = context.get_temp()
 
-    # TODO: kwargs
-    param_list: List[str] = []
-
-    if not isinstance(args, SExpr):
-        raise ValueError("Param list must be a list")
-
-    for arg in args:
-        if not isinstance(arg, SExprSymbol):
-            raise ValueError("Function param must be a symbol")
-        param_list.append(arg.get_mangled_name())
-
-    stmts: List[ASTBlock] = [stmt.compile(context) for stmt in body]
-
-    ret = ASTHelper.build_block_from_func_decl(name,
-                                               param_list,
-                                               stmts,
-                                               context)
+    ret = func_decl_macro(SExprSymbol(name), args, *body, context=context)
     ret.add_temp(name)
     return ret
 
 
 def import_macro(*args: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
-    modules: List[str] = []
+    stmts: List[ASTBlock] = []
 
-    # TODO alias
-    for arg in args:
-        if not isinstance(arg, SExprSymbol):
-            raise ValueError("Module name must be an symbol")
-        modules.append(arg.get_mangled_name())
+    it = iter(args)
 
-    return ASTHelper.build_block_from_import(modules)
+    while True:
+
+        modules: List[Tuple[str, Optional[str]]] = []
+        for arg in it:
+            if isinstance(arg, SExprKeyword):
+                assert arg == SExprKeyword("as")
+                assert not modules[-1][1]
+                arg = next(it)
+                assert isinstance(arg, SExprSymbol)
+                modules[-1] = (modules[-1][0], arg.get_mangled_name())
+            elif isinstance(arg, SExprSymbol):
+                modules.append((arg.get_mangled_name(), None))
+            elif isinstance(arg, SExpr):
+                break
+            else:
+                assert False, "Unknown argument type"
+        else:
+            if len(modules):
+                stmts.append(ASTHelper.build_block_from_import(modules))
+            break
+
+        if len(modules):
+            stmts.append(ASTHelper.build_block_from_import(modules))
+
+        assert isinstance(arg, SExpr)
+
+        itarg = iter(arg)
+
+        module = next(itarg)
+        assert isinstance(module, SExprSymbol)
+        module_name = module.get_mangled_name()
+        real_module_name = module_name.lstrip(".")
+        floor = len(module_name) - len(real_module_name)
+        names: List[Tuple[str, Optional[str]]] = []
+
+        for now in itarg:
+            if isinstance(now, SExprKeyword):
+                assert now == SExprKeyword("as")
+                assert not names[-1][1]
+                now = next(itarg)
+                assert isinstance(now, SExprSymbol)
+                names[-1] = (names[-1][0], now.get_mangled_name())
+            elif isinstance(now, SExprSymbol):
+                names.append((now.get_mangled_name(), None))
+            else:
+                assert False, "Unknown argument type"
+
+        stmts.append(ASTHelper.build_block_from_import_from(real_module_name if real_module_name else None,
+                                                            names,
+                                                            floor))
+
+    return ASTHelper.pack_block_stmts(stmts)
 
 
 def for_macro(bindings: SExprNodeBase,
@@ -189,7 +251,7 @@ def for_tuple_macro(bindings: SExprNodeBase,
                     first: SExprNodeBase,
                     *content: SExprNodeBase,
                     context: SExprContextManager) -> ASTBlock:
-    return SExpr(SExprSymbol('tuple'),
+    return SExpr(SExprSymbol('tuple*'),
                  SExpr(SExprSymbol("#*"),
                        SExpr(SExprSymbol("for/list"), bindings, first, *content))).compile(context)
 
@@ -332,7 +394,7 @@ def quasiquote_macro(target: SExprNodeBase, context: SExprContextManager) -> AST
     if not isinstance(target, SExpr):
         return target.dump_to_ast(context)
     else:
-        if len(target) == 0 or (str(target[0]) != "#~" and str(target[0]) != "#~*"):
+        if len(target) == 0 or (target[0] != SExprSymbol("#~") and target[0] != SExprSymbol("#~*")):
             params = []
 
             for content in target:
@@ -341,7 +403,7 @@ def quasiquote_macro(target: SExprNodeBase, context: SExprContextManager) -> AST
             return ASTHelper.build_block_from_func_call(
                 ASTHelper.build_block_from_symbol(SExpr.__name__),
                 params)
-        elif str(target[0]) == "#~":
+        elif target[0] == SExprSymbol("#~"):
             return target[1].compile(context)
         else:
             return unpack_iterable_macro(target[1], context=context)
@@ -463,8 +525,17 @@ def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
 
         target[last_ind] = values
 
+    def get_gensym():
+        counter = itertools.count()
+
+        def gensym():
+            return SExprSymbol("_TS_%d" % next(counter))
+
+        return gensym
+
     register_global_variable("getscr", get_subscr_func, env)
     register_global_variable("setscr!", set_subscr_func, env)
+    register_global_variable("gensym", get_gensym(), env)
 
     return context, env
 

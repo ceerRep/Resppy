@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-from itertools import chain
 
 from types import FunctionType
 from typing import *
@@ -16,7 +15,6 @@ __all__ = ['ASTBlock', 'ASTStmtBlock', 'ASTValues', 'ASTHelper']
 class ASTStmtBlock(ASTBlock):
     __stmts: Iterable[ast.stmt]
     result: Optional[ast.expr]
-    __temp_names: List[str]  # iterable?
 
     def __init__(self, stmts: Iterable[ast.stmt], result: Optional[ast.expr]):
         super().__init__()
@@ -24,7 +22,7 @@ class ASTStmtBlock(ASTBlock):
         self.result = result
 
     def append_stmt(self, stmts: Iterable[ast.stmt]) -> None:
-        self.__stmts = chain(self.__stmts, stmts)
+        self.__stmts = chain0(self.__stmts, stmts)
 
     @property
     def stmts(self) -> Iterable[ast.stmt]:
@@ -41,21 +39,20 @@ class ASTStmtBlock(ASTBlock):
             if not isinstance(self.result, ast.Constant) and \
                     not isinstance(self.result, ast.Name):
                 # may have side effect
-                self.__stmts = chain(self.__stmts, [ast.Expr(self.get_result())])
+                self.__stmts = chain0(self.__stmts, [ast.Expr(self.get_result())])
                 self.result = None
             else:
-                self.__stmts = chain(self.__stmts, [ast.Pass()])
+                self.__stmts = chain0(self.__stmts, [ast.Pass()])
         self.free_temp(context)
 
-    def apply_result(self, context: SExprContextManager):
+    def apply_result(self, context: SExprContextManager, name: Optional[str]):
         # WARNING DO NOT USE IT IN THIS FILE
-
         if self.result:
             if not isinstance(self.result, ast.Constant) and \
                     not isinstance(self.result, ast.Name):
                 # may have side effect
-
-                name = context.get_temp()
+                if not name:
+                    name = context.get_temp()
                 self.__stmts = ASTHelper.build_block_from_assign(
                     ASTHelper.build_block_from_symbol(name),
                     self,
@@ -64,7 +61,9 @@ class ASTStmtBlock(ASTBlock):
                 self.add_temp(name)
                 self.result = ast.Name(name, ast.Load())
             else:
-                self.__stmts = chain(self.__stmts, [ast.Pass()])
+                if name:
+                    context.free_temp(name)
+                self.__stmts = chain0(self.__stmts, [ast.Pass()])
 
 
 class ASTValues(ASTBlock):
@@ -84,8 +83,8 @@ class ASTValues(ASTBlock):
     def drop_result(self, context: SExprContextManager):
         self.values.drop_result(context)
 
-    def apply_result(self, context: SExprContextManager):
-        self.values.apply_result(context)
+    def apply_result(self, context: SExprContextManager, name: Optional[str]):
+        self.values.apply_result(context, name)
 
 
 class ASTHelper:
@@ -123,11 +122,13 @@ class ASTHelper:
 
         symbols = symbol.split(".")
 
-        target = ast.Name(symbols[0], ast.Load())
+        if all(symbols):
+            target = ast.Name(symbols[0], ast.Load())
 
-        for attr in symbols[1:]:
-            target = ast.Attribute(target, attr, ast.Load())
-
+            for attr in symbols[1:]:
+                target = ast.Attribute(target, attr, ast.Load())
+        else:
+            target = ast.Name(symbol, ast.Load())
         return ASTStmtBlock([], target)
 
     @staticmethod
@@ -143,6 +144,23 @@ class ASTHelper:
         ret = ASTHelper.pack_block_stmts([target, index])
         ret.result = ast.Subscript(target.get_result(), ast.Index(index.get_result()), ast.Load())
 
+        return ret
+
+    @staticmethod
+    def build_block_from_slice(lower: Optional[ASTBlock], upper: Optional[ASTBlock],
+                               step: Optional[ASTBlock]) -> ASTBlock:
+        stmts = []
+        if lower:
+            stmts.append(lower)
+            lower = lower.get_result()
+        if upper:
+            stmts.append(upper)
+            upper = upper.get_result()
+        if step:
+            stmts.append(step)
+            step = step.get_result()
+        ret = ASTHelper.pack_block_stmts(stmts)
+        ret.result = ast.Slice(lower, upper, step)
         return ret
 
     @staticmethod
@@ -183,7 +201,7 @@ class ASTHelper:
         stmts = [target, value]
 
         ret = ASTStmtBlock(
-            chain(*map(lambda x: x.stmts, stmts), [ast.Assign([target.get_store_result()], value.get_result())]),
+            chain0(*map(lambda x: x.stmts, stmts), [ast.Assign([target.get_store_result()], value.get_result())]),
             None
         )
 
@@ -268,9 +286,17 @@ class ASTHelper:
         return ASTHelper.pack_block_stmts(stmts)
 
     @staticmethod
-    def build_block_from_import(modules: List[str]):
-        # TODO: alias
-        return ASTStmtBlock([ast.Import(list(map(lambda x: ast.alias(x), modules)))], None)
+    def build_block_from_import(modules: List[Tuple[str, Optional[str]]]):
+        return ASTStmtBlock([ast.Import(list(map(lambda x: ast.alias(*x), modules)))], None)
+
+    @staticmethod
+    def build_block_from_import_from(module: Optional[str],
+                                     names: List[Tuple[str, Optional[str]]],
+                                     level: Optional[int]):
+        return ASTStmtBlock([
+            ast.ImportFrom(module,
+                           list(map(lambda x: ast.alias(*x), names)),
+                           level)], None)
 
     @staticmethod
     def build_block_from_func_call(func: ASTBlock,
@@ -298,7 +324,41 @@ class ASTHelper:
         return ret
 
     @staticmethod
-    def build_block_from_func_decl(name: str, args: List[str], stmts: List[ASTBlock], context: SExprContextManager):
+    def build_block_from_func_decl(funcname: str,
+                                   arguments: List[Tuple[str, Union[ASTBlock, None, Ellipsis]]],
+                                   stmts: List[ASTBlock],
+                                   context: SExprContextManager):
+        declstmts: List[ASTBlock] = []
+
+        args = []
+        vararg = None
+        kwonlyargs = []
+        kw_defaults = []
+        kwarg = None
+        defaults = []
+
+        for arg in arguments:
+            name, value = arg
+
+            if value is ...:
+                assert not vararg
+                vararg = ast.arg(name)
+            elif vararg:  # kwonly
+                kwonlyargs.append(ast.arg(name))
+
+                if isinstance(value, ASTBlock):
+                    declstmts.append(value)
+                    kw_defaults.append(value.get_result())
+                else:
+                    kw_defaults.append(value)
+            else:
+                args.append(ast.arg(name))
+
+                if defaults or isinstance(value, ASTBlock):
+                    assert isinstance(value, ASTBlock)
+                    declstmts.append(value)
+                    defaults.append(value.get_result())
+
         for stmt in stmts[:-1]:
             stmt.drop_result(context)
         body = ASTHelper.pack_block_stmts(stmts)
@@ -306,17 +366,24 @@ class ASTHelper:
 
         # TODO: py3.8 kwargs defaults
 
-        return ASTStmtBlock([
-            ast.FunctionDef(name=name,
+        declstmts.append(ASTStmtBlock([
+            ast.FunctionDef(name=funcname,
                             args=ast.arguments(
-                                args=list(map(lambda x: ast.arg(x), args)),
-                                kwonlyargs=[],
-                                kw_defaults=[],
-                                defaults=[]
+                                args=args,
+                                vararg=vararg,
+                                kwonlyargs=kwonlyargs,
+                                kw_defaults=kw_defaults,
+                                kwarg=kwarg,
+                                defaults=defaults
                             ),
                             body=list(body.stmts),
-                            decorator_list=[])],
-            ast.Name(name, ast.Load()))
+                            decorator_list=[],
+                            returns=None)],
+            None))
+        ret = ASTHelper.pack_block_stmts(declstmts)
+        ret.result = ASTHelper.build_block_from_symbol(funcname).get_result()
+
+        return ret
 
     @staticmethod
     def build_block_from_op(op: str, left: ASTBlock, right: ASTBlock):
@@ -335,10 +402,10 @@ class ASTHelper:
         ret_val = value.get_result()
 
         ret = ASTHelper.pack_block_stmts(
-            chain([value],
-                  [ASTStmtBlock([
-                      ast.Return(ret_val)
-                  ], None)]))
+            chain0([value],
+                   [ASTStmtBlock([
+                       ast.Return(ret_val)
+                   ], None)]))
         ret.free_temp(context)
 
         return ret
@@ -353,7 +420,7 @@ class ASTHelper:
             stmts.append(block.stmts)
             ret.merge_temp(block)
 
-        ret.append_stmt(chain(*stmts))
+        ret.append_stmt(chain0(*stmts))
 
         return ret
 

@@ -64,6 +64,14 @@ class SExprKeyword(SExprNodeBase):
     def get_mangled_name(self):
         return self.key.get_mangled_name()
 
+    def __eq__(self, other: SExprKeyword):
+        if not isinstance(other, SExprKeyword):
+            return False
+        return self.key == other.key
+
+    def __ne__(self, other):
+        return not self == other
+
 
 class SExprSymbol(SExprNodeBase):
     def __init__(self, name: str):
@@ -91,6 +99,14 @@ class SExprSymbol(SExprNodeBase):
     def compile(self, context: SExprContextManager) -> ASTBlock:
         return ASTHelper.build_block_from_symbol(self.get_mangled_name())
 
+    def __eq__(self, other: SExprSymbol):
+        if not isinstance(other, SExprSymbol):
+            return False
+        return self.name == other.name
+
+    def __ne__(self, other):
+        return not self == other
+
 
 class SExpr(SExprNodeBase):
     def __init__(self, *args: SExprNodeBase):
@@ -105,13 +121,9 @@ class SExpr(SExprNodeBase):
             stop = None
             step = -1
             if key.start:
-                # start = len(self) - 1 - key.start
                 start = -key.start - 1
             if key.stop:
-                # stop = len(self) - 1 - key.stop
                 stop = -key.stop - 1
-                # if stop < 0:
-                #    stop = None
             if key.step:
                 step = -key.step
             key = slice(start, stop, step)
@@ -125,13 +137,9 @@ class SExpr(SExprNodeBase):
             stop = None
             step = -1
             if key.start:
-                # start = len(self) - 1 - key.start
                 start = -key.start - 1
             if key.stop:
-                # stop = len(self) - 1 - key.stop
                 stop = -key.stop - 1
-                # if stop < 0:
-                #    stop = None
             if key.step:
                 step = -key.step
             key = slice(start, stop, step)
@@ -152,23 +160,35 @@ class SExpr(SExprNodeBase):
             self_iter: Iterator[SExprNodeBase] = iter(self)
             next(self_iter)
 
+            tmps: List[str] = []
+            blocks: List[ASTBlock] = []
+
+            tmps.append(context.get_temp())
             func = target.compile(context)
-            func.apply_result(context)
+            blocks.append(func)
 
             for item in self_iter:
                 if isinstance(item, SExprKeyword):
                     try:
                         kwname = item.key.get_mangled_name()
                         item = next(self_iter)
+                        tmps.append(context.get_temp())
                         kwval = item.compile(context)
-                        kwval.apply_result(context)
+                        blocks.append(kwval)
                         params.append((kwname, kwval))
                     except StopIteration:
                         raise ValueError("Excepted value for keyword " + str(item))
                 else:
+                    tmps.append(context.get_temp())
                     arg = item.compile(context)
-                    arg.apply_result(context)
+                    blocks.append(arg)
                     params.append(arg)
+            if any(blocks):
+                for block, name in zip(blocks, tmps):
+                    block.apply_result(context, name)
+            else:
+                for name in tmps:
+                    context.free_temp(name)
 
             return ASTHelper.build_block_from_func_call(
                 func,

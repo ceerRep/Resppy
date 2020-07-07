@@ -18,10 +18,15 @@ class ResppyRepl(Cmd):
     rparen = 0
     in_str = False
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, context_env=None, **kwargs):
         super(ResppyRepl, self).__init__(*args, **kwargs)
+
+        if context_env:
+            self.context, self.env = context_env
+        else:
+            self.context, self.env = generate_default_context()
+
         self.init()
-        self.context, self.env = generate_default_context()
 
     def init(self):
         self.buffer = []

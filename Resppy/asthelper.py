@@ -186,14 +186,14 @@ class ASTHelper:
 
         for value, alias in items:
             stmts.append(value)
-            if alias:
+            if alias is not None:
                 stmts.append(alias)
                 items_ast.append(ast.withitem(value.get_result(), alias.get_result_in_context(ast.Store())))
             else:
                 items_ast.append(ast.withitem(value.get_result(), None))
         body.drop_result(context)
         stmts.append(ASTStmtBlock([
-            ast.With(items_ast, body.stmts)
+            ast.With(items_ast, list(body.stmts))
         ], None))
 
         ret = ASTHelper.pack_block_stmts(stmts)

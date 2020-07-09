@@ -91,6 +91,40 @@ def begin_macro(*content: SExprNodeBase, context: SExprContextManager) -> ASTBlo
     return ret
 
 
+def with_macro(bindings: SExprNodeBase,
+               *body: SExprNodeBase,
+               context: SExprContextManager) -> ASTBlock:
+    result_name = context.get_temp()
+
+    assert isinstance(bindings, SExpr), "Bindings should be sexpr"
+
+    values = []
+    alias = []
+    binding_iter = iter(bindings)
+
+    for now in binding_iter:
+        if isinstance(now, SExprKeyword):
+            assert now == SExprKeyword("as")
+            assert alias[-1] is None
+            now = next(binding_iter).compile(context)
+            assert not now, "binding should not have stmt"
+            alias[-1] = now
+        else:
+            values.append(now)
+            alias.append(None)
+
+    values, _ = compile_sequence(*values, context=context)
+    body = SExpr(SExprSymbol("set!"),
+                 SExprSymbol(result_name),
+                 SExpr(SExprSymbol("begin"), *body)).compile(context)
+
+    ret = ASTHelper.build_block_from_with(list(zip(values, alias)), body, context)
+    ret.result = ASTHelper.build_block_from_symbol(result_name).get_result()
+    ret.add_temp(result_name)
+
+    return ret
+
+
 def parse_decl_arg_list(
         args: SExprNodeBase,
         context: SExprContextManager) -> Tuple[List[Tuple[str, Union[None, Ellipsis, ASTBlock]]], bool]:
@@ -274,7 +308,9 @@ def for_macro(bindings: SExprNodeBase,
         name: SExprNodeBase
         value: SExprNodeBase
 
-        names.append(name.compile(context))
+        name: ASTBlock = name.compile(context)
+        assert not name, "binding should not have stmts"
+        names.append(name)
         values.append(value)
 
     values = SExpr(SExprSymbol("zip"), *values).compile(context)
@@ -514,6 +550,7 @@ def generate_default_context() -> SExprContextManager:
     context.register('for', SystemMacro(for_macro))
     context.register('for/list', SystemMacro(for_list_macro))
     context.register('for/tuple', SystemMacro(for_tuple_macro))
+    context.register('with', SystemMacro(with_macro))
     context.register('while', SystemMacro(while_macro))
     context.register('break', SystemMacro(break_macro))
     context.register('pass', SystemMacro(pass_macro))

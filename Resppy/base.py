@@ -111,8 +111,8 @@ class ASTBlock:
     def get_result_in_context(self, ctx) -> ast.expr:
         ret = deepcopy(self.get_result())
 
-        if hasattr(ret, "ctx"):
-            ret.ctx = ctx
+        assert hasattr(ret, "ctx")
+        ret.ctx = ctx
 
         ret = ASTBlock.CtxTransformer().visit(ret)
 

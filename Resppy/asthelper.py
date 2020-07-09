@@ -201,7 +201,6 @@ class ASTHelper:
 
         return ret
 
-
     @staticmethod
     def build_block_from_list(contents: List[ASTBlock]) -> ASTStmtBlock:
         results = []
@@ -404,9 +403,9 @@ class ASTHelper:
 
             if value is ...:
                 assert not vararg
-                vararg = ast.arg(name)
+                vararg = ast.arg(name, annotation=None)
             elif vararg:  # kwonly
-                kwonlyargs.append(ast.arg(name))
+                kwonlyargs.append(ast.arg(name, annotation=None))
 
                 if isinstance(value, ASTBlock):
                     declstmts.append(value)
@@ -414,7 +413,7 @@ class ASTHelper:
                 else:
                     kw_defaults.append(value)
             else:
-                args.append(ast.arg(name))
+                args.append(ast.arg(name, annotation=None))
 
                 if defaults or isinstance(value, ASTBlock):
                     assert isinstance(value, ASTBlock)
@@ -534,15 +533,29 @@ class ASTHelper:
         result.drop_result(context)
 
         stmts = list(result.stmts)
-        naive = ast.fix_missing_locations(ast.Module(stmts))
+        node = ast.fix_missing_locations(ast.Module(stmts))
 
         # import astpretty
         # astpretty.pprint(naive)
 
         ret = compile(
-            naive,
+            node,
             'none',
             'exec'
         )
 
         return FunctionType(ret, context.env)
+
+    @staticmethod
+    def compile_to_code(result: ASTBlock, context: SExprContextManager) -> str:
+        from .unparse import Unparser
+        from io import StringIO
+        result.drop_result(context)
+
+        stmts = list(result.stmts)
+        node = ast.fix_missing_locations(ast.Module(stmts))
+
+        output = StringIO()
+        Unparser(node, output)
+
+        return output.getvalue()

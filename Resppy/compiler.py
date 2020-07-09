@@ -10,7 +10,7 @@ from typing import TextIO
 from enum import Enum, auto
 from .sexpr import *
 
-__all__ = ['compile_stream']
+__all__ = ['compile_stream', 'compile_stream_to_code']
 
 avail_special_chars = "~!@#$%^&*-_=+\\|:/?.>,<"
 
@@ -237,6 +237,23 @@ def compile_stream(stream: TextIO, context: SExprContextManager) -> FunctionType
     all_blocks = ASTHelper.pack_block_stmts(blocks)
 
     return ASTHelper.compile(all_blocks, context)
+
+
+def compile_stream_to_code(stream: TextIO, context: SExprContextManager) -> str:
+    sexprs = parse_stream(stream)
+    blocks: List[ASTBlock] = []
+
+    for sexpr in sexprs:
+        # sexpr = SExpr(SExprSymbol("print"), sexpr)
+        block = sexpr.compile(context)
+
+        block.drop_result(context)
+
+        blocks.append(block)
+
+    all_blocks = ASTHelper.pack_block_stmts(blocks)
+
+    return ASTHelper.compile_to_code(all_blocks, context)
 
 
 if __name__ == '__main__':

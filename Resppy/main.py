@@ -29,13 +29,12 @@ if __name__ == "__main__":
                 program = stream.read()
 
         context = generate_default_context()
-        f = compile_stream(StringIO(program), context)
 
         if not args.compile:
+            f = compile_stream(StringIO(program), context)
             f()
         else:
-            import uncompyle6
-            uncompyle6.deparse_code2str(f.__code__)
+            print(compile_stream_to_code(StringIO(program), context))
 
         if args.repl:
             ResppyRepl(context=context).cmdloop_with_keyboard_interrupt()

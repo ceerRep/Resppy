@@ -18,13 +18,13 @@ class ResppyRepl(Cmd):
     rparen = 0
     in_str = False
 
-    def __init__(self, *args, context_env=None, **kwargs):
+    def __init__(self, *args, context=None, **kwargs):
         super(ResppyRepl, self).__init__(*args, **kwargs)
 
-        if context_env:
-            self.context, self.env = context_env
+        if context:
+            self.context = context
         else:
-            self.context, self.env = generate_default_context()
+            self.context = generate_default_context()
 
         self.init()
 
@@ -79,7 +79,7 @@ class ResppyRepl(Cmd):
             target = SExpr(SExprSymbol('begin'), *contents)
             result = target.compile(self.context)
             result.drop_result(self.context)
-            code = ASTHelper.compile(result, self.context, self.env)
+            code = ASTHelper.compile(result, self.context)
             code()
 
         return False

@@ -156,39 +156,30 @@ class SExpr(SExprNodeBase):
         if isinstance(target, SExprSymbol) and context.resolve(target.get_mangled_name()):
             return context.resolve(target.get_mangled_name()).expand(self[1:], context)
         else:
+            sexprs = [target]
+            actions = [lambda x: None]
             params: List[Union[ASTBlock, Tuple[Optional[str], ASTBlock]]] = []
+
             self_iter: Iterator[SExprNodeBase] = iter(self)
             next(self_iter)
-
-            tmps: List[str] = []
-            blocks: List[ASTBlock] = []
-
-            tmps.append(context.get_temp())
-            func = target.compile(context)
-            blocks.append(func)
 
             for item in self_iter:
                 if isinstance(item, SExprKeyword):
                     try:
-                        kwname = item.key.get_mangled_name()
-                        item = next(self_iter)
-                        tmps.append(context.get_temp())
-                        kwval = item.compile(context)
-                        blocks.append(kwval)
-                        params.append((kwname, kwval))
+                        kwname = item.get_mangled_name()
+                        sexprs.append(next(self_iter))
+                        actions.append(lambda kwval, kwname=kwname: params.append((kwname, kwval)))
                     except StopIteration:
                         raise ValueError("Excepted value for keyword " + str(item))
                 else:
-                    tmps.append(context.get_temp())
-                    arg = item.compile(context)
-                    blocks.append(arg)
-                    params.append(arg)
-            if any(blocks):
-                for block, name in zip(blocks, tmps):
-                    block.apply_result(context, name)
-            else:
-                for name in tmps:
-                    context.free_temp(name)
+                    sexprs.append(item)
+                    actions.append(lambda arg: params.append(arg))
+
+            blocks, _ = compile_sequence(*sexprs, context=context)
+
+            func = blocks[0]
+            for block, action in zip(blocks, actions):
+                action(block)
 
             return ASTHelper.build_block_from_func_call(
                 func,
@@ -225,6 +216,40 @@ class SExpr(SExprNodeBase):
             rets[-1] = ','
         rets.append(')')
         return ''.join(rets)
+
+
+class SExprTempAllocContext:
+    def __init__(self, nodes: Iterable[SExprNodeBase], context: SExprContextManager):
+        self.names = []
+        self.nodes = nodes
+        self.context = context
+
+    def __enter__(self):
+        self.names = [self.context.get_temp() for _ in self.nodes]
+        self.blocks = [node.compile(self.context) for node in self.nodes]
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        for name in self.names:
+            self.context.free_temp(name)
+
+    def apply(self):
+        for block, name in zip(self.blocks, self.names):
+            block.apply_result(self.context, name)
+        self.names = []
+
+
+def compile_sequence(*nodes: SExprNodeBase, context: SExprContextManager) -> Tuple[List[ASTBlock], bool]:
+    applied = False
+
+    with SExprTempAllocContext(nodes, context) as temp_context:
+        if any(temp_context.blocks):
+            applied = True
+            temp_context.apply()
+
+        blocks = temp_context.blocks
+
+    return blocks, applied
 
 
 if __name__ == '__main__':

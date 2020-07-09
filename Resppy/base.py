@@ -9,7 +9,11 @@ from typing import *
 from copy import deepcopy
 from keyword import iskeyword
 
-__all__ = ["ASTBlock", "SExprMacro", "SExprContextManager", "sexpr_mangle", "chain0"]
+__all__ = ["ASTBlock",
+           "SExprMacro",
+           "SExprContextManager",
+           "sexpr_mangle",
+           "chain0"]
 
 mangle_prefix = "_S_"
 mangle_replace = [
@@ -66,31 +70,34 @@ class ASTBlock:
                     elt.ctx = node.ctx
 
     def __init__(self):
-        self.__temp_names = []
+        self._temp_names: Iterable[str] = []
 
     @property
     def stmts(self) -> Iterable[ast.stmt]:
         raise NotImplementedError("ASTBlock.stmt")
 
-    def free_temp(self, context: SExprContextManager) -> None:
-        for name in self.__temp_names:
+    def free_temp(self, context: SExprContextManager) -> List[str]:
+        names = []
+        for name in self._temp_names:
+            names.append(name)
             context.free_temp(name)
-        self.__temp_names = []
+        self._temp_names = []
+        return names
 
     @property
     def temps(self):
-        return self.__temp_names
+        return self._temp_names
 
     def add_temp(self, name: str):
-        self.__temp_names.append(name)
+        self._temp_names = chain0(self._temp_names, [name])
         return self
 
-    def add_temps(self, temps: List[str]):
-        self.__temp_names.extend(temps)
+    def add_temps(self, temps: Iterable[str]):
+        self._temp_names = chain0(self._temp_names, temps)
         return self
 
     def merge_temp(self, block: ASTBlock):
-        self.add_temps(block.__temp_names)
+        self.add_temps(block._temp_names)
 
     def get_result(self) -> ast.expr:
         raise NotImplementedError("ASTBlock.get_result")
@@ -101,11 +108,11 @@ class ASTBlock:
     def apply_result(self, context: SExprContextManager, name: Optional[str]):
         raise NotImplementedError("ASTBlock.apply_result")
 
-    def get_store_result(self) -> ast.expr:
+    def get_result_in_context(self, ctx) -> ast.expr:
         ret = deepcopy(self.get_result())
 
         if hasattr(ret, "ctx"):
-            ret.ctx = ast.Store()
+            ret.ctx = ctx
 
         ret = ASTBlock.CtxTransformer().visit(ret)
 
@@ -153,6 +160,15 @@ class SExprContextManager:
         self.contexts: List[SExprContextManager.SExprContext] = [
             SExprContextManager.SExprContext(None)
         ]
+
+        self.env: Dict[str, Any] = {
+            '__name__': 'code',
+            '__doc__': None,
+            '__package__': None,
+            '__loader__': None,
+            '__spec__': None
+        }
+        exec("from %s.sexpr import *" % __package__, self.env)  # fresh globals
 
     def register(self, name: str, body: SExprMacro):
         self.contexts[-1].register(name, body)

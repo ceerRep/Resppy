@@ -34,6 +34,12 @@ class ASTStmtBlock(ASTBlock):
         else:
             return ast.Constant(None)
 
+    def free_temp(self, context: SExprContextManager) -> List[str]:
+        temps = super(ASTStmtBlock, self).free_temp(context)
+        if temps:
+            self.__stmts = chain0(self.__stmts, [ast.Delete([ast.Name(temp, ast.Del()) for temp in temps])])
+        return temps
+
     def drop_result(self, context: SExprContextManager):
         if self.result:
             if not isinstance(self.result, ast.Constant) and \
@@ -201,7 +207,8 @@ class ASTHelper:
         stmts = [target, value]
 
         ret = ASTStmtBlock(
-            chain0(*map(lambda x: x.stmts, stmts), [ast.Assign([target.get_store_result()], value.get_result())]),
+            chain0(*map(lambda x: x.stmts, stmts), [ast.Assign([target.get_result_in_context(ast.Store())],
+                                                               value.get_result())]),
             None
         )
 
@@ -226,7 +233,7 @@ class ASTHelper:
         stmts = [target,
                  iter,
                  ASTStmtBlock([
-                     ast.For(target.get_store_result(),
+                     ast.For(target.get_result_in_context(ast.Store()),
                              iter.get_result(),
                              list(body.stmts),
                              list(elbody.stmts))
@@ -324,12 +331,44 @@ class ASTHelper:
         return ret
 
     @staticmethod
-    def build_block_from_func_decl(funcname: str,
-                                   arguments: List[Tuple[str, Union[ASTBlock, None, Ellipsis]]],
-                                   stmts: List[ASTBlock],
-                                   context: SExprContextManager):
-        declstmts: List[ASTBlock] = []
+    def build_block_from_class_decl(classname: str,
+                                    baseclasses: List[Union[ASTBlock, Tuple[Optional[str], ASTBlock]]],
+                                    classbody: ASTBlock,
+                                    context: SExprContextManager):
+        stmts = []
+        bases = []
+        keywords = []
 
+        for base in baseclasses:
+            if isinstance(base, tuple):
+                base: Tuple[Optional[str], ASTBlock]
+                stmts.append(base[1])
+                keywords.append(ast.keyword(base[0], base[1].get_result()))
+            elif isinstance(base, ASTBlock):
+                arg: ASTBlock
+                stmts.append(base)
+                bases.append(base.get_result())
+
+        classbody.drop_result(context)
+        body = list(classbody.stmts)
+
+        stmts.append(ASTStmtBlock([
+            ast.ClassDef(name=classname,
+                         bases=bases,
+                         keywords=keywords,
+                         body=body,
+                         decorator_list=[])],
+            None))
+        ret = ASTHelper.pack_block_stmts(stmts)
+        ret.result = ASTHelper.build_block_from_symbol(classname).get_result()
+
+        return ret
+
+    @staticmethod
+    def build_arguments(
+            arguments: List[Tuple[str, Union[ASTBlock, None, Ellipsis]]]
+    ) -> Tuple[List[ASTBlock], ast.arguments]:
+        declstmts: List[ASTBlock] = []
         args = []
         vararg = None
         kwonlyargs = []
@@ -358,26 +397,35 @@ class ASTHelper:
                     assert isinstance(value, ASTBlock)
                     declstmts.append(value)
                     defaults.append(value.get_result())
+        return (declstmts,
+                ast.arguments(
+                    args=args,
+                    vararg=vararg,
+                    kwonlyargs=kwonlyargs,
+                    kw_defaults=kw_defaults,
+                    kwarg=kwarg,
+                    defaults=defaults
+                ))
 
-        for stmt in stmts[:-1]:
-            stmt.drop_result(context)
-        body = ASTHelper.pack_block_stmts(stmts)
-        body.append_stmt([ast.Return(stmts[-1].get_result())])
+    @staticmethod
+    def build_block_from_func_decl(funcname: str,
+                                   arguments: List[Tuple[str, Union[ASTBlock, None, Ellipsis]]],
+                                   decorators: List[ASTBlock],
+                                   body: ASTBlock,
+                                   context: SExprContextManager) -> ASTStmtBlock:
+        deco_exprs = [decorator.get_result() for decorator in decorators]
+        declstmts, args = ASTHelper.build_arguments(arguments)
+        declstmts = decorators + declstmts
 
-        # TODO: py3.8 kwargs defaults
+        body = ASTHelper.build_block_from_return(body, context)
+
+        # TODO: py3.8 kwargs
 
         declstmts.append(ASTStmtBlock([
             ast.FunctionDef(name=funcname,
-                            args=ast.arguments(
-                                args=args,
-                                vararg=vararg,
-                                kwonlyargs=kwonlyargs,
-                                kw_defaults=kw_defaults,
-                                kwarg=kwarg,
-                                defaults=defaults
-                            ),
+                            args=args,
                             body=list(body.stmts),
-                            decorator_list=[],
+                            decorator_list=deco_exprs,
                             returns=None)],
             None))
         ret = ASTHelper.pack_block_stmts(declstmts)
@@ -386,7 +434,31 @@ class ASTHelper:
         return ret
 
     @staticmethod
-    def build_block_from_op(op: str, left: ASTBlock, right: ASTBlock):
+    def build_block_from_lambda(arguments: List[Tuple[str, Union[ASTBlock, None, Ellipsis]]],
+                                decorators: List[ASTBlock],
+                                body: ASTBlock,
+                                context: SExprContextManager) -> ASTStmtBlock:
+        """
+        :return: a lambda expr if possible, otherwise return a normal func decl
+        """
+
+        declstmts, args = ASTHelper.build_arguments(arguments)
+
+        if any(declstmts) or body:
+            body = ASTHelper.build_block_from_return(body, context)
+            name = context.get_temp()
+            ret = ASTHelper.build_block_from_func_decl(name,
+                                                       arguments,
+                                                       decorators,
+                                                       body,
+                                                       context)
+            ret.add_temp(name)
+            return ret
+        else:
+            return ASTStmtBlock([], ast.Lambda(args, body.get_result()))
+
+    @staticmethod
+    def build_block_from_op(op: str, left: ASTBlock, right: ASTBlock) -> ASTStmtBlock:
 
         ret = ASTHelper.pack_block_stmts([left, right])
 
@@ -411,6 +483,16 @@ class ASTHelper:
         return ret
 
     @staticmethod
+    def build_block_from_delete(targets: List[ASTBlock], context: SExprContextManager) -> ASTStmtBlock:
+        stmts = targets[:]
+        stmts.append(
+            ASTStmtBlock([ast.Delete([stmt.get_result_in_context(ast.Del()) for stmt in stmts])],
+                         None))
+        ret = ASTHelper.pack_block_stmts(stmts)
+        ret.free_temp(context)
+        return ret
+
+    @staticmethod
     def pack_block_stmts(blocks: Iterable[ASTBlock]) -> ASTStmtBlock:
         stmts = []
 
@@ -425,7 +507,7 @@ class ASTHelper:
         return ret
 
     @staticmethod
-    def compile(result: ASTBlock, context: SExprContextManager, globals_dict: Optional[Dict] = None) -> FunctionType:
+    def compile(result: ASTBlock, context: SExprContextManager) -> FunctionType:
         result.drop_result(context)
 
         stmts = list(result.stmts)
@@ -440,33 +522,4 @@ class ASTHelper:
             'exec'
         )
 
-        return FunctionType(ret, globals_dict if globals_dict else globals())
-
-
-if __name__ == '__main__':
-    def main():
-        # TODO: right test
-        context = SExprContextManager()
-        code = ASTHelper.compile(
-            ASTHelper.pack_block_stmts(
-                [
-                    ASTHelper.build_block_from_assign(
-                        ASTHelper.build_block_from_symbol("x"),
-                        ASTHelper.build_block_from_literal("x"),
-                        context
-                    ),
-                    ASTHelper.build_block_from_func_call(
-                        ASTHelper.build_block_from_symbol("print"),
-                        [ASTHelper.build_block_from_literal(1),
-                         ASTHelper.build_block_from_literal(1),
-                         ASTHelper.build_block_from_literal(1),
-                         ("sep", ASTHelper.build_block_from_symbol("x"))]
-                    )
-                ]
-            ),
-            context
-        )
-        code()
-
-
-    main()
+        return FunctionType(ret, context.env)

@@ -70,7 +70,12 @@ def sharp_macro(content: SExprNodeBase, context: SExprContextManager) -> ASTBloc
         raise ValueError("Unknown arg")
 
 
-def begin_macro(first: SExprNodeBase, *content: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
+def begin_macro(*content: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
+    if not content:
+        return ASTHelper.build_block_from_literal(None)
+    else:
+        first, *content = content
+
     stmts = [first.compile(context)]
     stmts.extend(map(lambda x: x.compile(context), content))
     last = stmts[-1]
@@ -86,15 +91,13 @@ def begin_macro(first: SExprNodeBase, *content: SExprNodeBase, context: SExprCon
     return ret
 
 
-def func_decl_macro(name: SExprNodeBase,
-                    args: SExprNodeBase,
-                    *body: SExprNodeBase,
-                    context: SExprContextManager) -> ASTBlock:
-    if not isinstance(name, SExprSymbol):
-        raise ValueError("Function name must be a symbol")
-
-    # TODO: kwargs
+def parse_decl_arg_list(
+        args: SExprNodeBase,
+        context: SExprContextManager) -> Tuple[List[Tuple[str, Union[None, Ellipsis, ASTBlock]]], bool]:
     param_list: List[Tuple[str, Union[None, Ellipsis, ASTBlock]]] = []
+
+    sexprs = []
+    name_pos = []
 
     if not isinstance(args, SExpr):
         raise ValueError("Param list must be a list")
@@ -102,34 +105,95 @@ def func_decl_macro(name: SExprNodeBase,
     for arg in args:
         if isinstance(arg, SExpr):
             assert len(arg) == 2
-            assert isinstance(arg[0], SExprSymbol)
+            assert isinstance(arg[0], SExprSymbol), "Function param must be a symbol"
 
             if isinstance(arg[1], SExprLiteral) and arg[1].value is ...:
                 param_list.append((arg[0].get_mangled_name(), ...))
             else:
-                param_list.append((arg[0].get_mangled_name(), arg[1].compile(context)))
+                sexprs.append(arg[1])
+                name_pos.append((arg[0].get_mangled_name(), len(param_list)))
+                param_list.append((arg[0].get_mangled_name(), ASTBlock()))
         elif isinstance(arg, SExprSymbol):
             param_list.append((arg.get_mangled_name(), None))
         else:
             raise ValueError("Function param must be a symbol")
 
-    stmts: List[ASTBlock] = [stmt.compile(context) for stmt in body]
+    blocks, applied = compile_sequence(*sexprs, context=context)
+    for block, (name, pos) in zip(blocks, name_pos):
+        param_list[pos] = (name, block)
 
+    return param_list, applied
+
+
+def class_decl_macro(name: SExprNodeBase,
+                     bases: SExprNodeBase,
+                     *body: SExprNodeBase,
+                     context: SExprContextManager) -> ASTBlock:
+    assert isinstance(name, SExprSymbol), "Class name must be a symbol"
+    assert isinstance(bases, SExpr), "Class bases must be a sexpr"
+
+    baseclasses = []
+    sexprs = []
+    actions = []
+
+    base_iter = iter(bases)
+    for sexpr in base_iter:
+        if isinstance(sexpr, SExprKeyword):
+            kwname = sexpr.get_mangled_name()
+            sexpr = next(base_iter)
+            sexprs.append(sexpr)
+            actions.append(lambda kwval, kwname=kwname: baseclasses.append((kwname, kwval)))
+        else:
+            sexprs.append(sexpr)
+            actions.append(lambda val: baseclasses.append(val))
+    blocks, _ = compile_sequence(*sexprs, context=context)
+
+    for block, action in zip(blocks, actions):
+        action(block)
+
+    bodystmt = begin_macro(*body, context=context)
+    bodystmt.drop_result(context)
+
+    return ASTHelper.build_block_from_class_decl(name.get_mangled_name(),
+                                                 baseclasses,
+                                                 bodystmt,
+                                                 context)
+
+
+def func_decl_macro(name: SExprNodeBase,
+                    args: SExprNodeBase,
+                    *body: SExprNodeBase,
+                    context: SExprContextManager) -> ASTBlock:
+    decorator_sexprs = []
+    if isinstance(name, SExpr):  # decorators
+        *decorator_sexprs, name = name
+    assert isinstance(name, SExprSymbol), "Function name must be a symbol"
+
+    with SExprTempAllocContext(decorator_sexprs, context) as deco_context:
+        param_list, applied = parse_decl_arg_list(args, context)
+
+        if applied or any(deco_context.blocks):
+            deco_context.apply()
+
+        decorators = deco_context.blocks
+    body = begin_macro(*body, context=context)
     ret = ASTHelper.build_block_from_func_decl(name.get_mangled_name(),
                                                param_list,
-                                               stmts,
+                                               decorators,
+                                               body,
                                                context)
-
     return ret
 
 
 def lambda_decl_macro(args: SExprNodeBase,
                       *body: SExprNodeBase,
                       context: SExprContextManager) -> ASTBlock:
-    name = context.get_temp()
-
-    ret = func_decl_macro(SExprSymbol(name), args, *body, context=context)
-    ret.add_temp(name)
+    param_list, applied = parse_decl_arg_list(args, context)
+    body = begin_macro(*body, context=context)
+    ret = ASTHelper.build_block_from_lambda(param_list,
+                                            [],
+                                            body,
+                                            context)
     return ret
 
 
@@ -294,13 +358,14 @@ def break_macro(context: SExprContextManager) -> ASTBlock:
     return ASTHelper.build_block_from_break()
 
 
+def pass_macro(context: SExprContextManager) -> ASTBlock:
+    return ASTHelper.build_block_from_pass()
+
+
 def when_macro(test: SExprNodeBase,
                first: SExprNodeBase,
                *content: SExprNodeBase,
                context: SExprContextManager) -> ASTBlock:
-    # test = test.compile(context)
-    # body = begin_macro(first, *content, context=context)
-
     return if_macro(
         test,
         SExpr(SExprSymbol('begin'), first, *content),
@@ -308,26 +373,17 @@ def when_macro(test: SExprNodeBase,
         context
     )
 
-    # ret = ASTHelper.build_block_from_if(test,
-    #                                     body,
-    #                                     ASTHelper.build_block_from_pass(),
-    #                                     context)
-    # return ret
-
 
 def unless_macro(test: SExprNodeBase,
                  first: SExprNodeBase,
                  *content: SExprNodeBase,
                  context: SExprContextManager) -> ASTBlock:
-    test = test.compile(context)
-    body = begin_macro(first, *content, context=context)
-    body.drop_result(context)
-
-    ret = ASTHelper.build_block_from_if(test,
-                                        ASTHelper.build_block_from_pass(),
-                                        body,
-                                        context)
-    return ret
+    return if_macro(
+        test,
+        SExprLiteral(None),
+        SExpr(SExprSymbol('begin'), first, *content),
+        context
+    )
 
 
 def set_macro(target: SExprNodeBase,
@@ -414,29 +470,19 @@ def defmacro_macro(name: SExprNodeBase,
                    *body: SExprNodeBase,
                    context: SExprContextManager) -> ASTBlock:
     assert isinstance(name, SExprSymbol)
-    _, env = generate_default_context()
     function = func_decl_macro(name, args, *body, context=context)
 
-    ASTHelper.compile(function, context, env)()
+    ASTHelper.compile(function, context)()
 
-    function = env[name.get_mangled_name()]
+    function = context.env[name.get_mangled_name()]
     context.register(str(name), UserMacro(function))
 
     return ASTHelper.build_block_from_literal(None)
 
 
-def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
-    env = {
-        '__name__': 'code',
-        '__doc__': None,
-        '__package__': None,
-        '__loader__': None,
-        '__spec__': None
-    }
-    exec("from %s.sexpr import *" % __package__, env)  # fresh globals
-
-    def register_global_variable(name: str, func, env: Dict[str, Any]):
-        env[sexpr_mangle(name)] = func
+def generate_default_context() -> SExprContextManager:
+    def register_global_variable(name: str, func, context: SExprContextManager):
+        context.env[sexpr_mangle(name)] = func
 
     def register_op(op: str, context: SExprContextManager, alias: Optional[str] = None):
         def op_macro(left: SExprNodeBase, right: SExprNodeBase, context: SExprContextManager) -> ASTBlock:
@@ -457,14 +503,16 @@ def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
     context.register('tuple*', SystemMacro(tuple_macro))
     context.register('begin', SystemMacro(begin_macro))
     context.register('defn', SystemMacro(func_decl_macro))
-    context.register('defmacro', SystemMacro(defmacro_macro))
     context.register('fn', SystemMacro(lambda_decl_macro))
+    context.register('defmacro', SystemMacro(defmacro_macro))
+    context.register('defclass', SystemMacro(class_decl_macro))
     context.register('import', SystemMacro(import_macro))
     context.register('for', SystemMacro(for_macro))
     context.register('for/list', SystemMacro(for_list_macro))
     context.register('for/tuple', SystemMacro(for_tuple_macro))
     context.register('while', SystemMacro(while_macro))
     context.register('break', SystemMacro(break_macro))
+    context.register('pass', SystemMacro(pass_macro))
     context.register('if', SystemMacro(if_macro))
     context.register('when', SystemMacro(when_macro))
     context.register('unless', SystemMacro(unless_macro))
@@ -492,23 +540,23 @@ def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
     register_op('>=', context)
     context.register('contains?', SystemMacro(contains_macro))
 
-    register_global_variable("void", lambda *args, **kwargs: None, env)
-    register_global_variable("list*", lambda *args: [*args], env)
-    register_global_variable("tuple*", lambda *args: (*args,), env)
-    register_global_variable("+", lambda a, b: a + b, env)
-    register_global_variable("-", lambda a, b: a - b, env)
-    register_global_variable("*", lambda a, b: a * b, env)
-    register_global_variable("/", lambda a, b: a / b, env)
-    register_global_variable("//", lambda a, b: a // b, env)
-    register_global_variable("%", lambda a, b: a % b, env)
-    register_global_variable("<", lambda a, b: a < b, env)
-    register_global_variable("<=", lambda a, b: a <= b, env)
-    register_global_variable(">", lambda a, b: a > b, env)
-    register_global_variable(">=", lambda a, b: a >= b, env)
-    register_global_variable("eq?", lambda a, b: a == b, env)
-    register_global_variable("**", lambda a, b: a ** b, env)
-    register_global_variable("@", lambda a, b: a @ b, env)
-    register_global_variable("contains?", lambda a, b: b in a, env)
+    register_global_variable("void", lambda *args, **kwargs: None, context)
+    register_global_variable("list*", lambda *args: [*args], context)
+    register_global_variable("tuple*", lambda *args: (*args,), context)
+    register_global_variable("+", lambda a, b: a + b, context)
+    register_global_variable("-", lambda a, b: a - b, context)
+    register_global_variable("*", lambda a, b: a * b, context)
+    register_global_variable("/", lambda a, b: a / b, context)
+    register_global_variable("//", lambda a, b: a // b, context)
+    register_global_variable("%", lambda a, b: a % b, context)
+    register_global_variable("<", lambda a, b: a < b, context)
+    register_global_variable("<=", lambda a, b: a <= b, context)
+    register_global_variable(">", lambda a, b: a > b, context)
+    register_global_variable(">=", lambda a, b: a >= b, context)
+    register_global_variable("eq?", lambda a, b: a == b, context)
+    register_global_variable("**", lambda a, b: a ** b, context)
+    register_global_variable("@", lambda a, b: a @ b, context)
+    register_global_variable("contains?", lambda a, b: b in a, context)
 
     def get_subscr_func(target, *indexes):
         for index in indexes:
@@ -529,15 +577,17 @@ def generate_default_context() -> Tuple[SExprContextManager, Dict[str, Any]]:
         counter = itertools.count()
 
         def gensym():
-            return SExprSymbol("_TS_%d" % next(counter))
+            ret = next(counter)
+            print(ret)
+            return SExprSymbol("_TS_%d" % ret)
 
         return gensym
 
-    register_global_variable("getscr", get_subscr_func, env)
-    register_global_variable("setscr!", set_subscr_func, env)
-    register_global_variable("gensym", get_gensym(), env)
+    register_global_variable("getscr", get_subscr_func, context)
+    register_global_variable("setscr!", set_subscr_func, context)
+    register_global_variable("gensym", get_gensym(), context)
 
-    return context, env
+    return context
 
 
 if __name__ == "__main__":

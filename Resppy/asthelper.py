@@ -178,6 +178,31 @@ class ASTHelper:
         return ASTStmtBlock([ast.Pass()], None)
 
     @staticmethod
+    def build_block_from_with(items: List[Tuple[ASTBlock, Optional[ASTBlock]]],
+                              body: ASTBlock,
+                              context: SExprContextManager) -> ASTStmtBlock:
+        stmts: List[ASTBlock] = []
+        items_ast = []
+
+        for value, alias in items:
+            stmts.append(value)
+            if alias:
+                stmts.append(alias)
+                items_ast.append(ast.withitem(value.get_result(), alias.get_result_in_context(ast.Store())))
+            else:
+                items_ast.append(ast.withitem(value.get_result(), None))
+        body.drop_result(context)
+        stmts.append(ASTStmtBlock([
+            ast.With(items_ast, body.stmts)
+        ], None))
+
+        ret = ASTHelper.pack_block_stmts(stmts)
+        ret.free_temp(context)
+
+        return ret
+
+
+    @staticmethod
     def build_block_from_list(contents: List[ASTBlock]) -> ASTStmtBlock:
         results = []
 
@@ -227,9 +252,6 @@ class ASTHelper:
         body.drop_result(context)
         elbody.drop_result(context)
 
-        target.free_temp(context)
-        iter.free_temp(context)
-
         stmts = [target,
                  iter,
                  ASTStmtBlock([
@@ -238,8 +260,9 @@ class ASTHelper:
                              list(body.stmts),
                              list(elbody.stmts))
                  ], None)]
-
-        return ASTHelper.pack_block_stmts(stmts)
+        ret = ASTHelper.pack_block_stmts(stmts)
+        ret.free_temp(context)
+        return ret
 
     @staticmethod
     def build_block_from_while(test: ASTBlock,

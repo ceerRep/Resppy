@@ -56,13 +56,13 @@ def sharp_macro(content: SExprNodeBase, context: SExprContextManager) -> ASTBloc
 
             for param in content[1:]:
                 if isinstance(param, SExprSymbol) and param == SExprSymbol("$"):
-                    params.append(ASTHelper.build_block_from_literal(None))
+                    params.append(SExprLiteral(None))
                 else:
-                    params.append(param.compile(context))
+                    params.append(param)
             while len(params) < 3:
-                params.append(ASTHelper.build_block_from_literal(None))
+                params.append(SExprLiteral(None))
             assert len(params) == 3
-            return ASTHelper.build_block_from_func_call(ASTHelper.build_block_from_symbol("slice"), params)
+            return SExpr(SExprSymbol("slice"), *params).compile(context)
     elif isinstance(content, SExprLiteral):
         if isinstance(content.value, str):
             return ASTHelper.build_block_from_literal(eval("b" + repr(content.value)))
@@ -275,15 +275,15 @@ def for_macro(bindings: SExprNodeBase,
         value: SExprNodeBase
 
         names.append(name.compile(context))
-        values.append(value.compile(context))
+        values.append(value)
+
+    values = SExpr(SExprSymbol("zip"), *values).compile(context)
 
     body = begin_macro(first, *content, context=context)
 
     return ASTHelper.build_block_from_for(
         ASTHelper.build_block_from_tuple(names),
-        ASTHelper.build_block_from_func_call(
-            ASTHelper.build_block_from_symbol("zip"),
-            values),
+        values,
         body,
         ASTHelper.build_block_from_pass(),
         context
@@ -291,20 +291,25 @@ def for_macro(bindings: SExprNodeBase,
 
 
 def for_list_macro(bindings: SExprNodeBase,
-                   first: SExprNodeBase,
                    *content: SExprNodeBase,
                    context: SExprContextManager) -> ASTBlock:
     result_name = context.get_temp()
-    body = SExpr(SExprSymbol("%s.append" % result_name),
-                 SExpr(SExprSymbol("begin"), first, *content))
+    append_name = context.get_temp()
+    body = SExpr(SExprSymbol(append_name),
+                 SExpr(SExprSymbol("begin"), *content))
     ret = for_macro(bindings, body, context=context)
     ret.drop_result(context)
     ret = ASTHelper.pack_block_stmts([
         ASTHelper.build_block_from_assign(ASTHelper.build_block_from_symbol(result_name),
                                           ASTHelper.build_block_from_list([]),
                                           context),
+        ASTHelper.build_block_from_assign(ASTHelper.build_block_from_symbol(append_name),
+                                          ASTHelper.build_block_from_symbol(result_name + ".append"),
+                                          context),
         ret
     ])
+    ret.add_temp(append_name)
+    ret.free_temp(context)
     ret.add_temp(result_name)
     ret.result = ASTHelper.build_block_from_symbol(result_name).get_result()
 
@@ -312,12 +317,11 @@ def for_list_macro(bindings: SExprNodeBase,
 
 
 def for_tuple_macro(bindings: SExprNodeBase,
-                    first: SExprNodeBase,
                     *content: SExprNodeBase,
                     context: SExprContextManager) -> ASTBlock:
     return SExpr(SExprSymbol('tuple*'),
                  SExpr(SExprSymbol("#*"),
-                       SExpr(SExprSymbol("for/list"), bindings, first, *content))).compile(context)
+                       SExpr(SExprSymbol("for/list"), bindings, *content))).compile(context)
 
 
 def if_macro(test: SExprNodeBase,

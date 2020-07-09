@@ -222,7 +222,7 @@ def parse_stream(stream: TextIO):
     return ret
 
 
-def compile_stream(stream: TextIO, context: SExprContextManager, global_dict: Optional[Dict] = None) -> FunctionType:
+def compile_stream(stream: TextIO, context: SExprContextManager) -> FunctionType:
     sexprs = parse_stream(stream)
     blocks: List[ASTBlock] = []
 
@@ -236,7 +236,7 @@ def compile_stream(stream: TextIO, context: SExprContextManager, global_dict: Op
 
     all_blocks = ASTHelper.pack_block_stmts(blocks)
 
-    return ASTHelper.compile(all_blocks, context, global_dict)
+    return ASTHelper.compile(all_blocks, context)
 
 
 if __name__ == '__main__':

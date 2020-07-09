@@ -28,8 +28,8 @@ if __name__ == "__main__":
             with open(args.filename, encoding="utf-8") as stream:
                 program = stream.read()
 
-        context, env = generate_default_context()
-        f = compile_stream(StringIO(program), context, env)
+        context = generate_default_context()
+        f = compile_stream(StringIO(program), context)
 
         if not args.compile:
             f()
@@ -38,7 +38,7 @@ if __name__ == "__main__":
             uncompyle6.deparse_code2str(f.__code__)
 
         if args.repl:
-            ResppyRepl(context_env=(context, env)).cmdloop_with_keyboard_interrupt()
+            ResppyRepl(context=context).cmdloop_with_keyboard_interrupt()
 
 
     main(sys.argv)

@@ -34,11 +34,11 @@ class ASTStmtBlock(ASTBlock):
         else:
             return ast.Constant(None)
 
-    def free_temp(self, context: SExprContextManager) -> List[str]:
-        temps = super(ASTStmtBlock, self).free_temp(context)
-        if temps:
-            self.__stmts = chain0(self.__stmts, [ast.Delete([ast.Name(temp, ast.Del()) for temp in temps])])
-        return temps
+    # def free_temp(self, context: SExprContextManager) -> List[str]:
+    #     temps = super(ASTStmtBlock, self).free_temp(context)
+    #     if temps:
+    #         self.__stmts = chain0(self.__stmts, [ast.Delete([ast.Name(temp, ast.Del()) for temp in temps])])
+    #     return temps
 
     def drop_result(self, context: SExprContextManager):
         if self.result:
@@ -122,6 +122,14 @@ class ASTHelper:
         'in': ast.In,
         'notin': ast.NotIn
     }
+
+    @staticmethod
+    def build_block_from_nonlocal(symbols: List[str]) -> ASTStmtBlock:
+        return ASTStmtBlock([ast.Nonlocal(symbols)], None)
+
+    @staticmethod
+    def build_block_from_global(symbols: List[str]) -> ASTStmtBlock:
+        return ASTStmtBlock([ast.Global(symbols)], None)
 
     @staticmethod
     def build_block_from_symbol(symbol: str) -> ASTStmtBlock:
@@ -328,6 +336,46 @@ class ASTHelper:
                            level)], None)
 
     @staticmethod
+    def build_block_from_try(excepthandler: List[Tuple[Optional[ASTBlock],
+                                                       Optional[str],
+                                                       ASTBlock]],
+                             body: ASTBlock,
+                             orelse: ASTBlock,
+                             finalbody: ASTBlock,
+                             context: SExprContextManager) -> ASTStmtBlock:
+        assert excepthandler or finalbody is not None
+
+        stmts: List[ASTBlock] = []
+        handlers = []
+
+        for typestmt, name, bodystmt in excepthandler:
+            if typestmt is not None:
+                stmts.append(typestmt)
+            bodystmt.drop_result(context=context)
+            handlers.append(((typestmt.get_result() if typestmt is not None else None),
+                             (name if name is not None else None),
+                             list(bodystmt.stmts)))
+
+        body.drop_result(context)
+        body = list(body.stmts)
+        orelse.drop_result(context)
+        orelse = list(orelse.stmts)
+        finalbody.drop_result(context)
+        finalbody = list(finalbody.stmts)
+
+        stmts.append(ASTStmtBlock([
+            ast.Try(body,
+                    [ast.ExceptHandler(*x) for x in handlers],
+                    orelse,
+                    finalbody)
+        ], None))
+
+        ret = ASTHelper.pack_block_stmts(stmts)
+        ret.free_temp(context)
+
+        return ret
+
+    @staticmethod
     def build_block_from_func_call(func: ASTBlock,
                                    args: List[Union[ASTBlock, Tuple[Optional[str], ASTBlock]]]) -> ASTStmtBlock:
         stmts = []
@@ -459,7 +507,7 @@ class ASTHelper:
     def build_block_from_lambda(arguments: List[Tuple[str, Union[ASTBlock, None, Ellipsis]]],
                                 decorators: List[ASTBlock],
                                 body: ASTBlock,
-                                context: SExprContextManager) -> ASTStmtBlock:
+                                context: SExprContextManager) -> Optional[ASTStmtBlock]:
         """
         :return: a lambda expr if possible, otherwise return a normal func decl
         """
@@ -467,15 +515,7 @@ class ASTHelper:
         declstmts, args = ASTHelper.build_arguments(arguments)
 
         if any(declstmts) or body:
-            body = ASTHelper.build_block_from_return(body, context)
-            name = context.get_temp()
-            ret = ASTHelper.build_block_from_func_decl(name,
-                                                       arguments,
-                                                       decorators,
-                                                       body,
-                                                       context)
-            ret.add_temp(name)
-            return ret
+            return None
         else:
             return ASTStmtBlock([], ast.Lambda(args, body.get_result()))
 

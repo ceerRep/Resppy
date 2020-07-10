@@ -223,6 +223,7 @@ class SExprTempAllocContext:
         self.names = []
         self.nodes = nodes
         self.context = context
+        self.applied = False
 
     def __enter__(self):
         self.names = [self.context.get_temp() for _ in self.nodes]
@@ -230,13 +231,24 @@ class SExprTempAllocContext:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        for name in self.names:
+        blocks = iter(self.blocks)
+        names = iter(self.names)
+        if self.applied:
+            for block, name in zip(blocks, names):
+                block.apply_result(self.context, name)
+            self.names = []
+        for name in names:
             self.context.free_temp(name)
 
+    def compile(self, node: SExprNodeBase) -> ASTBlock:
+        tmp = self.context.get_temp()
+        self.names.append(tmp)
+        ret = node.compile(self.context)
+        self.blocks.append(ret)
+        return ret
+
     def apply(self):
-        for block, name in zip(self.blocks, self.names):
-            block.apply_result(self.context, name)
-        self.names = []
+        self.applied = True
 
 
 def compile_sequence(*nodes: SExprNodeBase, context: SExprContextManager) -> Tuple[List[ASTBlock], bool]:

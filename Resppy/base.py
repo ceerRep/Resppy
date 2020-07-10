@@ -86,6 +86,7 @@ class ASTBlock:
 
     @property
     def temps(self):
+        self._temp_names = list(self._temp_names)
         return self._temp_names
 
     def add_temp(self, name: str):
@@ -126,11 +127,11 @@ class SExprContextManager:
     class SExprContext:
         TEMP_PREFIX = "_ST_"
 
-        def __init__(self, parent):
+        def __init__(self, parent: Optional[SExprContextManager.SExprContext]):
             self.parent = parent
             self.macros: Dict[str, SExprMacro] = {}
             self.free_temps = []
-            self.next_temp_id = 1
+            self.next_temp_id = parent.next_temp_id + 1 if parent else 0
 
         def register(self, name: str, body: SExprMacro):
             self.macros[sexpr_mangle(name)] = body
@@ -139,11 +140,14 @@ class SExprContextManager:
             if name in self.macros:
                 return self.macros[name]
             elif self.parent:
-                return self.parent.resolve[name]
+                return self.parent.resolve(name)
             elif name in globals() and isinstance(globals()[name], SExprMacro):
                 return globals()[name]
             else:
                 return None
+
+        def is_temp(self, name: str):
+            return name.startswith(self.TEMP_PREFIX)
 
         def get_temp(self):
             if self.free_temps:
@@ -176,6 +180,9 @@ class SExprContextManager:
     def resolve(self, name):
         return self.contexts[-1].resolve(name)
 
+    def is_temp(self, name: str):
+        return self.contexts[-1].is_temp(name)
+
     def get_temp(self):
         return self.contexts[-1].get_temp()
 
@@ -190,6 +197,10 @@ class SExprContextManager:
     def pop_context(self):
         assert len(self.contexts) > 1
         self.contexts.pop()
+
+    @property
+    def floor(self):
+        return len(self.contexts)
 
 
 class SExprMacro:

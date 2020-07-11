@@ -1,0 +1,39 @@
+(defmacro as-> (identifier (body ...))
+  `(begin
+	#~* (for/list ((sexpr body)) `(set! #~ identifier #~ sexpr))
+	#~ identifier))
+
+(defmacro -> (first (body ...))
+  (set! now first)
+  (for ((sexpr body))
+	   (set! now
+			 `(#~(getscr sexpr 0) #~ now #~*(getscr sexpr #[1]))))
+  now)
+
+(defmacro ->> (first (body ...))
+  (set! now first)
+  (for ((sexpr body))
+	   (set! now
+			 `(#~* body #~ now)))
+  now)
+
+(defclass ResppyStopLoop (BaseException)
+  (defn __init__ (self n)
+	(set! self.n n)))
+
+(defclass ResppyContinueLoop (BaseException)
+  (defn __init__(self n)
+	(set! self.n n)))
+
+(defmacro break ((n (SExprLiteral 1))) `(raise (ResppyStopLoop #~ n)))
+(defmacro continue ((n (SExprLiteral 1))) `(raise (ResppyContinueLoop #~ n)))
+(defmacro for (bindings (body ...))
+  `(__for #~ bindings
+		  (try
+		   (__begin #~* body)
+		   ((ResppyStopLoop e)
+			(if (<= e.n 1) (__break) (break (- e.n 1))))
+		   ((ResppyContinueLoop e)
+			(if (<= e.n 1) (__continue) (continue (- e.n 1))))
+		   )))
+

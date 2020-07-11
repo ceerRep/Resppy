@@ -173,6 +173,11 @@ class SExprContextManager:
             '__spec__': None
         }
         exec("from %s.sexpr import *" % __package__, self.env)  # fresh globals
+        self.headers = []
+
+    def exec_headers(self, env: Dict[str, Any]):
+        for header in self.headers:
+            exec(header, env)
 
     def register(self, name: str, body: SExprMacro):
         self.contexts[-1].register(name, body)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import itertools
 
 from .base import *
@@ -123,7 +125,7 @@ def with_macro(bindings: SExprNodeBase,
     values, _ = compile_sequence(*values, context=context)
     body = SExpr(SExprSymbol("set!"),
                  SExprSymbol(result_name),
-                 SExpr(SExprSymbol("begin"), *body)).compile(context)
+                 SExpr(SExprSymbol("__begin"), *body)).compile(context)
 
     ret = ASTHelper.build_block_from_with(list(zip(values, alias)), body, context)
     ret.result = ASTHelper.build_block_from_symbol(result_name).get_result()
@@ -315,7 +317,6 @@ def import_macro(*args: SExprNodeBase, context: SExprContextManager) -> ASTBlock
 
 
 def for_macro(bindings: SExprNodeBase,
-              first: SExprNodeBase,
               *content: SExprNodeBase,
               context: SExprContextManager) -> ASTBlock:
     if not isinstance(bindings, SExpr):
@@ -339,7 +340,7 @@ def for_macro(bindings: SExprNodeBase,
 
     values = SExpr(SExprSymbol("zip"), *values).compile(context)
 
-    body = begin_macro(first, *content, context=context)
+    body = begin_macro(*content, context=context)
 
     return ASTHelper.build_block_from_for(
         ASTHelper.build_block_from_tuple(names),
@@ -381,7 +382,7 @@ def for_tuple_macro(bindings: SExprNodeBase,
                     context: SExprContextManager) -> ASTBlock:
     return SExpr(SExprSymbol('tuple*'),
                  SExpr(SExprSymbol("#*"),
-                       SExpr(SExprSymbol("for/list"), bindings, *content))).compile(context)
+                       SExpr(SExprSymbol("__for/list"), bindings, *content))).compile(context)
 
 
 def if_macro(test: SExprNodeBase,
@@ -422,6 +423,10 @@ def break_macro(context: SExprContextManager) -> ASTBlock:
     return ASTHelper.build_block_from_break()
 
 
+def continue_macro(context: SExprContextManager) -> ASTBlock:
+    return ASTHelper.build_block_from_continue()
+
+
 def pass_macro(context: SExprContextManager) -> ASTBlock:
     return ASTHelper.build_block_from_pass()
 
@@ -430,6 +435,18 @@ def when_macro(test: SExprNodeBase,
                first: SExprNodeBase,
                *content: SExprNodeBase,
                context: SExprContextManager) -> ASTBlock:
+    return if_macro(
+        test,
+        SExpr(SExprSymbol('__begin'), first, *content),
+        SExprLiteral(None),
+        context
+    )
+
+
+def when_macro_with_new_locals(test: SExprNodeBase,
+                               first: SExprNodeBase,
+                               *content: SExprNodeBase,
+                               context: SExprContextManager) -> ASTBlock:
     return if_macro(
         test,
         SExpr(SExprSymbol('begin'), first, *content),
@@ -442,6 +459,18 @@ def unless_macro(test: SExprNodeBase,
                  first: SExprNodeBase,
                  *content: SExprNodeBase,
                  context: SExprContextManager) -> ASTBlock:
+    return if_macro(
+        test,
+        SExprLiteral(None),
+        SExpr(SExprSymbol('__begin'), first, *content),
+        context
+    )
+
+
+def unless_macro_with_new_locals(test: SExprNodeBase,
+                                 first: SExprNodeBase,
+                                 *content: SExprNodeBase,
+                                 context: SExprContextManager) -> ASTBlock:
     return if_macro(
         test,
         SExprLiteral(None),
@@ -543,7 +572,7 @@ def try_macro(body: SExprNodeBase,
     for head, *handlerbody in others:
         bodystmt = SExpr(SExprSymbol("set!"),
                          SExprSymbol(result),
-                         SExpr(SExprSymbol("begin"),
+                         SExpr(SExprSymbol("__begin"),
                                *handlerbody)).compile(context)
         if isinstance(head, SExpr):
             assert len(head) <= 2
@@ -560,7 +589,7 @@ def try_macro(body: SExprNodeBase,
                 else:
                     alias = None
 
-                if typeexpr and SExprSymbol("begin") != head[0][0]:
+                if typeexpr:
                     typeexpr = ASTHelper.build_block_from_lambda([], [], typeexpr, context)
                     typeexpr = ASTHelper.build_block_from_func_call(typeexpr, [])
                 handlers.append((typeexpr,
@@ -598,6 +627,15 @@ def try_macro(body: SExprNodeBase,
     return ret
 
 
+def raise_macro(*body: SExprNodeBase,
+                context: SExprContextManager) -> ASTBlock:
+    assert len(body) <= 2
+    body, _ = compile_sequence(*body, context=context)
+    while len(body) < 2:
+        body.append(None)
+    return ASTHelper.build_block_from_raise(*body, context=context)
+
+
 def defmacro_macro(name: SExprNodeBase,
                    args: SExprNodeBase,
                    *body: SExprNodeBase,
@@ -605,7 +643,7 @@ def defmacro_macro(name: SExprNodeBase,
     assert isinstance(name, SExprSymbol)
     function = func_decl_macro(name, args, *body, context=context)
 
-    ASTHelper.compile(function, context)()
+    exec(ASTHelper.compile(function, context), context.env)
 
     function = context.env[name.get_mangled_name()]
     context.register(str(name), UserMacro(function))
@@ -641,14 +679,16 @@ def generate_default_context() -> SExprContextManager:
     context.register('defmacro', SystemMacro(defmacro_macro))
     context.register('defclass', SystemMacro(class_decl_macro))
     context.register('import', SystemMacro(import_macro))
-    context.register('for', SystemMacro(for_macro))
-    context.register('for/list', SystemMacro(for_list_macro))
-    context.register('for/tuple', SystemMacro(for_tuple_macro))
+    context.register('__for', SystemMacro(for_macro))
+    context.register('__for/list', SystemMacro(for_list_macro))
+    context.register('__for/tuple', SystemMacro(for_tuple_macro))
     context.register('with', SystemMacro(with_macro))
-    context.register('while', SystemMacro(while_macro))
-    context.register('break', SystemMacro(break_macro))
+    context.register('__while', SystemMacro(while_macro))
+    context.register('__break', SystemMacro(break_macro))
+    context.register('__continue', SystemMacro(continue_macro))
     context.register('pass', SystemMacro(pass_macro))
     context.register('try', SystemMacro(try_macro))
+    context.register('raise', SystemMacro(raise_macro))
     context.register('if', SystemMacro(if_macro))
     context.register('when', SystemMacro(when_macro))
     context.register('unless', SystemMacro(unless_macro))
@@ -731,5 +771,9 @@ def generate_default_context() -> SExprContextManager:
     register_global_variable("getscr", get_subscr_func, context)
     register_global_variable("setscr!", set_subscr_func, context)
     register_global_variable("gensym", get_gensym(), context)
+
+    from .compiler import compile_stream_to_code
+    with open(os.path.join(sys.modules[__package__].__path__[0], "macros.rsp"), encoding="utf-8") as fin:
+        context.headers.append(compile_stream_to_code(fin, context))
 
     return context

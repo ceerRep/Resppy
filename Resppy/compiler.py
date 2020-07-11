@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import ast
-from itertools import chain
-from types import FunctionType
-from typing import *
-from typing import TextIO
+from types import CodeType
 from enum import Enum, auto
 from .sexpr import *
 
@@ -222,7 +219,7 @@ def parse_stream(stream: TextIO):
     return ret
 
 
-def compile_stream(stream: TextIO, context: SExprContextManager) -> FunctionType:
+def compile_stream(stream: TextIO, context: SExprContextManager) -> CodeType:
     sexprs = parse_stream(stream)
     blocks: List[ASTBlock] = []
 
@@ -254,23 +251,3 @@ def compile_stream_to_code(stream: TextIO, context: SExprContextManager) -> str:
     all_blocks = ASTHelper.pack_block_stmts(blocks)
 
     return ASTHelper.compile_to_code(all_blocks, context)
-
-
-if __name__ == '__main__':
-    def main():
-        import uncompyle6
-        from sys import stdin, argv
-        from io import StringIO
-        from .macro import generate_default_context
-
-        if len(argv) == 2:
-            target = open(argv[1], encoding='utf-8')
-        else:
-            target = stdin
-        context, env = generate_default_context()
-        f = compile_stream(StringIO(target.read()), context, env)
-
-        uncompyle6.deparse_code2str(f.__code__)
-
-
-    main()

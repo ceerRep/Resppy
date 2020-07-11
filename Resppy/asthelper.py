@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 
-from types import FunctionType
+from types import CodeType, FunctionType
 from typing import *
 
 from .base import *
@@ -303,6 +303,10 @@ class ASTHelper:
         return ASTStmtBlock([ast.Break()], None)
 
     @staticmethod
+    def build_block_from_continue() -> ASTStmtBlock:
+        return ASTStmtBlock([ast.Continue()], None)
+
+    @staticmethod
     def build_block_from_if(test: ASTBlock,
                             body: ASTBlock,
                             elbody: ASTBlock,
@@ -373,6 +377,24 @@ class ASTHelper:
         ret = ASTHelper.pack_block_stmts(stmts)
         ret.free_temp(context)
 
+        return ret
+
+    @staticmethod
+    def build_block_from_raise(exc: Optional[ASTBlock],
+                               cause: Optional[ASTBlock],
+                               context: SExprContextManager):
+        stmts = []
+
+        if exc is not None:
+            stmts.append(exc)
+            exc = exc.get_result()
+        if cause is not None:
+            stmts.append(cause)
+            cause = cause.get_result()
+
+        stmts.append(ASTStmtBlock([ast.Raise(exc, cause)], None))
+        ret = ASTHelper.pack_block_stmts(stmts)
+        ret.drop_result(context)
         return ret
 
     @staticmethod
@@ -569,7 +591,7 @@ class ASTHelper:
         return ret
 
     @staticmethod
-    def compile(result: ASTBlock, context: SExprContextManager) -> FunctionType:
+    def compile(result: ASTBlock, context: SExprContextManager) -> CodeType:
         result.drop_result(context)
 
         stmts = list(result.stmts)
@@ -584,7 +606,7 @@ class ASTHelper:
             'exec'
         )
 
-        return FunctionType(ret, context.env)
+        return ret
 
     @staticmethod
     def compile_to_code(result: ASTBlock, context: SExprContextManager) -> str:

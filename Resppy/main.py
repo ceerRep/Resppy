@@ -1,5 +1,6 @@
 #! /usr/bin/env python3
 
+import os
 import sys
 import argparse
 from typing import *
@@ -29,15 +30,18 @@ if __name__ == "__main__":
                 program = stream.read()
 
         context = generate_default_context()
+        context.exec_headers(globals())
 
         if not args.compile:
-            f = compile_stream(StringIO(program), context)
-            f()
+            code = compile_stream(StringIO(program), context)
+            exec(code)
         else:
+            for header in context.headers:
+                print(header)
             print(compile_stream_to_code(StringIO(program), context))
 
         if args.repl:
-            ResppyRepl(context=context).cmdloop_with_keyboard_interrupt()
+            ResppyRepl(context=context, env=globals()).cmdloop_with_keyboard_interrupt()
 
 
     main(sys.argv)

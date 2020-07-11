@@ -18,13 +18,19 @@ class ResppyRepl(Cmd):
     rparen = 0
     in_str = False
 
-    def __init__(self, *args, context=None, **kwargs):
+    def __init__(self, *args, context=None, env=None, **kwargs):
         super(ResppyRepl, self).__init__(*args, **kwargs)
 
         if context:
             self.context = context
         else:
             self.context = generate_default_context()
+
+        if env is not None:
+            self.env = env
+        else:
+            self.env = globals()
+            self.context.exec_headers(self.env)
 
         self.init()
 
@@ -80,7 +86,7 @@ class ResppyRepl(Cmd):
             result = target.compile(self.context)
             result.drop_result(self.context)
             code = ASTHelper.compile(result, self.context)
-            code()
+            exec(code, self.env)
 
         return False
 
